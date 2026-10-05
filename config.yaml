@@ -1,0 +1,54 @@
+# Central configuration for the drunk project.
+# All key parameters and settings are read from this file via app/config.py.
+# Relative paths are resolved against the directory containing this file.
+
+# Master seed for the RNG in main.py that generates each drunk's own seed.
+seed: 42
+
+composite:
+  # Sizes of the CompositeDrunks created by main.py (one composite per entry,
+  # each with that many member drunks).
+  sizes: [3, 7]
+
+parallel:
+  # Maximum worker processes used to run a composite's member drunks in
+  # parallel (null = one per CPU, never more than the number of members).
+  max_workers: null
+
+walk:
+  # Number of steps each drunk takes.
+  num_steps: 1000
+  # Distance moved on each step.
+  step_size: 1.0
+  # Homeward bias: step directions follow a von Mises distribution centred on
+  # the direction back to (0, 0), with concentration
+  #   kappa = kappa_max * (1 - exp(-r / r0)),  r = distance from the origin.
+  # Maximum bias strength, reached far from the origin (0 = uniform random walk).
+  kappa_max: 0.25
+  # Distance over which the bias builds up (kappa reaches ~63% of kappa_max at r = r0).
+  r0: 10.0
+
+deposit:
+  # After each step the drunk deposits a 2D Gaussian at its new location, with
+  # uniformly random axis directions. Variance along the major axis; the minor
+  # axis has variance * u, with u uniform in (0, 1].
+  variance: 1.0
+  # Peak amplitude of the first deposit.
+  initial_amplitude: 1.0
+  # Geometric decay: the k-th deposit has amplitude initial_amplitude * decay**k.
+  decay: 0.999
+
+plot:
+  # Resolution (points per side) of the grid used to render the summed deposits.
+  grid_points: 400
+  # Each Gaussian is only evaluated where it exceeds cutoff x its peak, i.e.
+  # within sqrt(2 ln(1/cutoff)) standard deviations of its centre (~4.08 sd
+  # for 1/4096). Skipping the negligible tails makes rendering much faster.
+  # 0 = evaluate every Gaussian over the whole grid (exact, slow).
+  cutoff: 0.000244140625  # 1/4096
+
+paths:
+  # Folder of sample input images.
+  sample_images_dir: sample_images
+  # Folder where generated outputs are written (created if missing).
+  output_dir: output

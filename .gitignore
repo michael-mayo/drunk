@@ -1,0 +1,38 @@
+# Editors / tooling
+.idea/
+.claude/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Python build/cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments
+.venv/
+venv/
+env/
+.conda/
+
+# Secrets and local config
+.env
+*.local.yaml
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Logs and scratch output
+*.log
+tmp/
+
+# Generated outputs
+output/
