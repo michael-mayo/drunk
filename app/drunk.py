@@ -126,7 +126,7 @@ class Drunk:
         return field
 
     def to_png(self, filename: Path | str, grid_points: int = 400, cutoff: float = 1 / 4096) -> None:
-        """Save a heatmap of the summed deposits to ``filename``, with the path overlaid faintly.
+        """Save a heatmap of the summed deposits to ``filename``.
 
         The plotted area covers every visited location plus a margin of three
         standard deviations, sampled on a ``grid_points`` x ``grid_points``
@@ -137,14 +137,14 @@ class Drunk:
         gx, gy = square_grid(path, 3.0 * math.sqrt(self.variance), grid_points)
         field = self.density(gx, gy, cutoff)
         title = f"Drunk seed={self.seed}: {self.num_steps} deposits, distance {self.distance_from_origin():.2f}"
-        save_heatmap(filename, field, gx, gy, [path], title)
+        save_heatmap(filename, field, gx, gy, title)
 
     def __str__(self) -> str:
         """Human-readable summary of the drunk's state."""
         x, y = self.location
         last_amplitude = self.deposits[-1].amplitude if self.deposits else self.initial_amplitude
         return (
-            f"Drunk(seed={self.seed}, step_size={self.step_size}, kappa_max={self.kappa_max}, "
+            f"Drunk(seed={self.seed}, step_size={self.step_size}, kappa_max={self.kappa_max:.4g}, "
             f"r0={self.r0}, variance={self.variance}, decay={self.decay}, steps={self.num_steps}, "
             f"location=({x:.2f}, {y:.2f}), distance={self.distance_from_origin():.2f}, "
             f"last_amplitude={last_amplitude:.3f})"

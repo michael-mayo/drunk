@@ -5,16 +5,22 @@
 A simple 2D random-walk ("drunkard's walk") simulator. Each `Drunk` starts at the origin and, on
 every step, staggers a fixed distance in a random direction that is biased back towards home, and
 deposits a randomly oriented 2D Gaussian at its new location. A `CompositeDrunk` groups several
-independent drunks, runs them in parallel worker processes, and renders the sum of all their
-deposits. The program builds composites of configurable sizes (3 and 7 by default), prints a summary
-of each, and saves a heatmap of each composite's combined deposits (with every member's path overlaid
-faintly) as a PNG.
+already-constructed drunks, runs them in parallel worker processes, and renders the sum of all their
+deposits. The program builds three composites, of 5, 10 and 20 drunks. Within each, the drunks are
+identical except for a random seed and a homeward bias `kappa_max` spaced logarithmically over the
+same range, 0.01 to 0.4. For each composite it prints a summary and saves a heatmap of the combined
+deposits, normalised to [0, 1], as a PNG.
 
 ### Sample output
 
-| Composite of 3 drunks | Composite of 7 drunks |
-|---|---|
-| ![Composite of 3](sample_images/composite_3_drunks.png) | ![Composite of 7](sample_images/composite_7_drunks.png) |
+| 5 drunks | 10 drunks | 20 drunks |
+|---|---|---|
+| ![Composite of 5 drunks](sample_images/composite_5_drunks.png) | ![Composite of 10 drunks](sample_images/composite_10_drunks.png) | ![Composite of 20 drunks](sample_images/composite_20_drunks.png) |
+
+All three use `kappa_max` from 0.01 to 0.4. Weakly biased members wander furthest and leave faint
+arms far from home, while strongly biased ones keep their deposits near the origin. With more
+drunks the peak at the origin dominates more, so after normalisation the outlying arms look
+fainter.
 
 Sample images are kept in [`sample_images/`](sample_images/) (generated with the `config.yaml`
 values listed under [Configuration](#configuration)).
@@ -29,7 +35,8 @@ Step directions are drawn from a [von Mises distribution](https://en.wikipedia.o
 κ(r) = kappa_max · (1 − exp(−r / r0))
 ```
 
-`kappa_max` and `r0` are constants from `config.yaml`. At the origin `κ = 0`, so directions are
+`kappa_max` and `r0` are constants for each drunk (in `main.py`, `r0` comes from `config.yaml` and
+`kappa_max` is set per member). At the origin `κ = 0`, so directions are
 uniform. As `r` grows, `κ` rises smoothly towards `kappa_max` and steps increasingly point home.
 For example, with `kappa_max = 2`, `r0 = 10`:
 
@@ -70,22 +77,27 @@ slow evaluation.
 
 ### Composite drunks and parallelism
 
-`CompositeDrunk` (`app/composite_drunk.py`) inherits from `Drunk` and is built from a list of seeds,
-creating one member `Drunk` per seed with shared parameters. It has no randomness or deposits of
-its own:
+`CompositeDrunk` (`app/composite_drunk.py`) is a standalone class that contains drunks rather than
+being one. It is constructed from a list of already-created `Drunk` objects, which may have
+different parameters but must all have taken the same number of steps. It offers the same walking
+and rendering operations, applied to all members, and has no randomness or deposits of its own:
 
 - `location` is the centroid of the members' locations; `positions` is the centroid path.
 - `step()` advances every member by one step, sequentially (a single step is far cheaper than
   sending a drunk to another process).
 - `steps(n)` advances every member by `n` steps **in parallel**, one member per worker process.
-- `to_png()` evaluates each member's deposit field on a shared grid **in parallel**, sums the
-  fields, and overlays every member's path.
+  Workers advance copies; the parent then copies each result's state back onto the original
+  `Drunk` object, so references held by the caller stay current.
+- `density()` and `to_png()` **normalise** the summed field to [0, 1] by dividing by its maximum
+  over the grid (the field is non-negative, so 0 still means "no deposits" and the peak is 1).
+- `to_png()` evaluates each member's deposit field on a shared grid **in parallel**, sums and
+  normalises the fields, and saves the heatmap.
 
 Processes are used rather than threads because this Python build has the GIL enabled, so threads
 cannot run the pure-Python stepping loop concurrently. The design is race-free by construction:
 each worker receives its own pickled copy of one member (each member has its own RNG) and returns a
 result, so no mutable state is shared. `ProcessPoolExecutor.map` returns results in submission
-order, and they are combined only in the parent process, so output is bit-for-bit identical to a
+order, and they are applied and combined only in the parent process, so output is bit-for-bit identical to a
 sequential run.
 
 ## Requirements
@@ -117,14 +129,18 @@ python app/main.py      # or equivalently: python -m app.main
 Example console output (abridged):
 
 ```
-CompositeDrunk(n=3, step_size=1.0, kappa_max=0.25, r0=10.0, variance=1.0, decay=0.999, steps=1000, centroid=(-3.28, -5.72), centroid_distance=6.60)
-  Drunk(seed=383329928, step_size=1.0, kappa_max=0.25, r0=10.0, variance=1.0, decay=0.999, steps=1000, location=(2.57, -5.70), distance=6.25, last_amplitude=0.368)
-  Drunk(seed=3324115917, ...)
-  Drunk(seed=2811363265, ...)
-Saved /home/michael/drunk/output/composite_3_drunks.png
-CompositeDrunk(n=7, ..., centroid=(-1.41, -0.77), centroid_distance=1.60)
+CompositeDrunk(n=5, steps=1000, centroid=(11.11, 2.27), centroid_distance=11.34)
+  Drunk(seed=383329928, step_size=1.0, kappa_max=0.01, r0=10.0, variance=1.0, decay=0.999, steps=1000, location=(25.45, 7.65), distance=26.58, last_amplitude=0.368)
+  Drunk(seed=3324115917, step_size=1.0, kappa_max=0.02515, ...)
   ...
-Saved /home/michael/drunk/output/composite_7_drunks.png
+  Drunk(seed=1859786276, step_size=1.0, kappa_max=0.4, ...)
+Saved /home/michael/drunk/output/composite_5_drunks.png
+CompositeDrunk(n=10, steps=1000, centroid=(-6.58, 2.43), centroid_distance=7.01)
+  ...
+Saved /home/michael/drunk/output/composite_10_drunks.png
+CompositeDrunk(n=20, steps=1000, centroid=(2.31, 0.69), centroid_distance=2.41)
+  ...
+Saved /home/michael/drunk/output/composite_20_drunks.png
 ```
 
 One image per composite is written to the configured output folder (default `output/`) as
@@ -140,11 +156,12 @@ folder containing `config.yaml`.
 | Setting | Type | Current value | Description |
 |---|---|---|---|
 | `seed` | int | `42` | Master seed for the RNG that generates every member drunk's seed |
-| `composite.sizes` | list of int | `[3, 7]` | One `CompositeDrunk` is built per entry, with that many member drunks |
+| `composite.sizes` | list of int | `[5, 10, 20]` | One composite is built per entry, with that many member drunks |
+| `composite.kappa_max_start` | float | `0.01` | `kappa_max` of the first member |
+| `composite.kappa_max_end` | float | `0.4` | `kappa_max` of the last member; members in between are spaced logarithmically (`np.geomspace`). The same range is used for every composite size |
 | `parallel.max_workers` | int or `null` | `null` | Maximum worker processes per composite (`null` = one per CPU, capped at the number of members) |
 | `walk.num_steps` | int | `1000` | Number of steps each member drunk takes |
 | `walk.step_size` | float | `1.0` | Distance moved on each step |
-| `walk.kappa_max` | float | `0.25` | Maximum homeward bias, reached far from the origin (`0` = uniform walk) |
 | `walk.r0` | float | `10.0` | Distance over which the bias builds up (`κ` ≈ 63% of `kappa_max` at `r = r0`) |
 | `deposit.variance` | float | `1.0` | Major-axis variance of each Gaussian (minor axis = `variance × u`, `u` ~ U(0, 1]) |
 | `deposit.initial_amplitude` | float | `1.0` | Peak amplitude of the first deposit |
@@ -158,10 +175,13 @@ folder containing `config.yaml`.
 
 ### `app.main`
 
-Seeds a master RNG from `config.yaml`. For each size in `composite.sizes` it generates that many
-member seeds, builds a `CompositeDrunk`, runs it for `walk.num_steps` steps (members in parallel),
-prints its summary, and saves a heatmap of its combined deposits to
-`<output_dir>/composite_<n>_drunks.png`.
+Seeds a master RNG from `config.yaml`. For each size `n` in `composite.sizes` it draws `n` member
+seeds from that RNG and creates one `Drunk` per seed, identical except for `kappa_max`, which is
+spaced logarithmically from `composite.kappa_max_start` to `composite.kappa_max_end`. The range is
+the same for every size, and only the spacing gets finer: with 5 drunks the values are 0.01,
+0.025, 0.063, 0.159 and 0.4, each about 2.51× the last. It wraps the drunks in a `CompositeDrunk`,
+runs it for `walk.num_steps` steps (members in parallel), prints its summary, and saves a heatmap
+of the combined deposits to `<output_dir>/composite_<n>_drunks.png`.
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -189,20 +209,23 @@ python -m app.main                          # same, run as a module
 | `density(gx, gy, cutoff=1/4096)` | Sum of all deposits on the regular grid with 1D axes `gx`, `gy`; returns shape `(len(gy), len(gx))` |
 | `num_steps` | Steps taken so far |
 | `distance_from_origin()` | Straight-line distance from (0, 0) |
-| `to_png(filename, grid_points=400, cutoff=1/4096)` | Save a heatmap of the summed deposits (path, start and end overlaid) to an image file |
+| `to_png(filename, grid_points=400, cutoff=1/4096)` | Save a heatmap of the summed deposits to an image file |
 | `str(drunk)` | One-line summary: settings, steps, location, distance, last deposit amplitude |
 
-### `app.composite_drunk.CompositeDrunk(Drunk)` (library class)
+### `app.composite_drunk.CompositeDrunk` (library class)
 
 | Member | Description |
 |---|---|
-| `CompositeDrunk(seeds, step_size=1.0, kappa_max=2.0, r0=10.0, variance=1.0, decay=0.999, initial_amplitude=1.0, max_workers=None)` | Create one member `Drunk` per seed, sharing the given parameters |
-| `drunks` | The member `Drunk`s |
+| `CompositeDrunk(drunks, max_workers=None)` | Wrap a non-empty list of already-created `Drunk`s, which must all have taken the same number of steps (`ValueError` otherwise) |
+| `drunks` | The member `Drunk`s (the same objects passed in, updated in place as the composite walks) |
+| `max_workers` | Cap on worker processes (`None` = one per CPU) |
 | `step()` | Advance every member by one step (sequential); returns the centroid |
 | `steps(n=100)` | Advance every member by `n` steps in parallel processes; returns the centroid |
 | `location` / `positions` | Centroid of the members' current location / path |
-| `density(gx, gy, cutoff=1/4096)` | Sum of all members' deposits on the grid `gx`, `gy` (sequential) |
-| `to_png(filename, grid_points=400, cutoff=1/4096)` | Evaluate members' fields in parallel, sum them, and save a heatmap with every member's path |
+| `num_steps` | Steps taken by each member |
+| `distance_from_origin()` | Distance of the centroid from (0, 0) |
+| `density(gx, gy, cutoff=1/4096)` | Sum of all members' deposits on the grid `gx`, `gy`, normalised to [0, 1] (sequential) |
+| `to_png(filename, grid_points=400, cutoff=1/4096)` | Evaluate members' fields in parallel, sum and normalise them to [0, 1], and save a heatmap |
 | `str(composite)` | Summary line for the composite followed by one line per member |
 
 ## System diagram
@@ -228,7 +251,6 @@ classDiagram
             +to_png(filename) None
         }
         class CompositeDrunk {
-            +seeds list~int~
             +drunks list~Drunk~
             +max_workers int
             +step() tuple
@@ -246,7 +268,7 @@ classDiagram
         }
         class rendering {
             +square_grid(points, margin, grid_points)
-            +save_heatmap(filename, field, gx, gy, paths, title)
+            +save_heatmap(filename, field, gx, gy, title, label)
         }
         class load_config {
             +load_config(path) Config
@@ -267,8 +289,8 @@ classDiagram
     main --> load_config : calls
     load_config ..> config_yaml : reads
     load_config ..> Config : creates
-    main ..> CompositeDrunk : creates & runs
-    Drunk <|-- CompositeDrunk : inherits
+    main ..> Drunk : creates n members per composite
+    main ..> CompositeDrunk : wraps members & runs
     CompositeDrunk *-- Drunk : n members
     CompositeDrunk ..> ProcessPool : steps() / to_png() fan out members
     Drunk *-- GaussianDeposit : deposits each step
@@ -282,7 +304,7 @@ flowchart LR
     P[parent: CompositeDrunk.steps] -->|pickled copy of member i| W1[worker 1: member.steps n]
     P --> W2[worker 2: member.steps n]
     P --> Wn[worker n: member.steps n]
-    W1 -->|advanced member| M[parent: map results in order, replace members]
+    W1 -->|advanced copy| M[parent: map results in order, copy state back onto original members]
     W2 --> M
     Wn --> M
 ```
@@ -297,7 +319,7 @@ drunk/
 │   ├── composite_drunk.py # CompositeDrunk: n drunks run in parallel processes
 │   ├── gaussian.py        # GaussianDeposit: oriented anisotropic 2D Gaussian
 │   ├── rendering.py       # Shared grid and heatmap PNG rendering
-│   └── main.py            # Entry point: runs the composites and saves their heatmaps
+│   └── main.py            # Entry point: builds the drunks, runs the composite, saves its heatmap
 ├── sample_images/         # Sample output images shown in this README
 ├── output/                # Generated images (git-ignored)
 ├── config.yaml            # All key parameters and settings

@@ -6,9 +6,13 @@
 seed: 42
 
 composite:
-  # Sizes of the CompositeDrunks created by main.py (one composite per entry,
-  # each with that many member drunks).
-  sizes: [3, 7]
+  # main.py builds one CompositeDrunk per entry, each with that many member drunks.
+  sizes: [5, 10, 20]
+  # Members are identical except for their random seed and kappa_max (see the
+  # walk section), which is spaced logarithmically from kappa_max_start to
+  # kappa_max_end across the members.
+  kappa_max_start: 0.01
+  kappa_max_end: 0.4
 
 parallel:
   # Maximum worker processes used to run a composite's member drunks in
@@ -23,8 +27,8 @@ walk:
   # Homeward bias: step directions follow a von Mises distribution centred on
   # the direction back to (0, 0), with concentration
   #   kappa = kappa_max * (1 - exp(-r / r0)),  r = distance from the origin.
-  # Maximum bias strength, reached far from the origin (0 = uniform random walk).
-  kappa_max: 0.25
+  # kappa_max (the maximum bias, reached far from the origin; 0 = uniform walk)
+  # is set per member from composite.kappa_max_start / kappa_max_end.
   # Distance over which the bias builds up (kappa reaches ~63% of kappa_max at r = r0).
   r0: 10.0
 

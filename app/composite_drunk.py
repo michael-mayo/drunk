@@ -18,58 +18,51 @@ def _run_steps(drunk: Drunk, n: int) -> Drunk:
     return drunk
 
 
+def _normalise(field: np.ndarray) -> np.ndarray:
+    """Scale a non-negative ``field`` by its maximum so it lies in [0, 1] (an all-zero field is returned unchanged)."""
+    peak = field.max()
+    return field / peak if peak > 0 else field
+
+
 def _density(drunk: Drunk, gx: np.ndarray, gy: np.ndarray, cutoff: float) -> np.ndarray:
     """Worker: evaluate ``drunk``'s summed deposits on the grid ``gx`` x ``gy`` (runs in a child process)."""
     return drunk.density(gx, gy, cutoff)
 
 
-class CompositeDrunk(Drunk):
-    """A composite of ``n`` independent member drunks, one per seed.
+class CompositeDrunk:
+    """A composite of independent, already-constructed member drunks.
 
-    The composite takes the same walk and deposit parameters as ``Drunk`` and
-    passes them to every member. It has no randomness or deposits of its own:
-    its location is the centroid of the members' locations, and its rendered
-    field is the sum of the members' fields.
+    The composite is a container rather than a kind of ``Drunk``: it holds
+    the members it is given and offers the same walking and rendering
+    operations (``step``, ``steps``, ``density``, ``to_png``), applied to all
+    of them. Members may have different parameters. The composite has no
+    randomness or deposits of its own: its location is the centroid of the
+    members' locations, and its field is the sum of their fields, normalised
+    by its maximum to lie in [0, 1].
 
     ``steps`` and ``to_png`` farm the members out to a process pool (threads
     wouldn't help, as the stepping loop is pure Python and holds the GIL).
     This is race-free by construction: each worker receives its own pickled
     copy of one member and returns a result, so no mutable state is shared.
-    Results come back in submission order and are combined only in the parent
+    Results come back in submission order and are applied only in the parent
     process, so the output is identical to a sequential run.
     """
 
-    def __init__(
-        self,
-        seeds: list[int],
-        step_size: float = 1.0,
-        kappa_max: float = 2.0,
-        r0: float = 10.0,
-        variance: float = 1.0,
-        decay: float = 0.999,
-        initial_amplitude: float = 1.0,
-        max_workers: int | None = None,
-    ) -> None:
-        """Create one member ``Drunk`` per seed, all sharing the given parameters.
+    def __init__(self, drunks: list[Drunk], max_workers: int | None = None) -> None:
+        """Wrap ``drunks``, which must be non-empty and have all taken the same number of steps.
 
-        ``max_workers`` caps the process pool size; ``None`` uses one worker
-        per CPU (never more than the number of members).
+        The composite keeps references to the given ``Drunk`` objects, and
+        updates them in place as it walks. ``max_workers`` caps the process
+        pool size; ``None`` uses one worker per CPU (never more than the
+        number of members).
         """
-        if not seeds:
-            raise ValueError("CompositeDrunk needs at least one seed")
-        params = dict(
-            step_size=step_size,
-            kappa_max=kappa_max,
-            r0=r0,
-            variance=variance,
-            decay=decay,
-            initial_amplitude=initial_amplitude,
-        )
-        # Initialise the shared parameters; the base RNG and deposit list go unused.
-        super().__init__(seeds[0], **params)
-        self.seeds = list(seeds)
+        if not drunks:
+            raise ValueError("CompositeDrunk needs at least one drunk")
+        # The centroid path averages members step by step, so their paths must align.
+        if len({d.num_steps for d in drunks}) != 1:
+            raise ValueError("All drunks in a CompositeDrunk must have taken the same number of steps")
+        self.drunks = list(drunks)
         self.max_workers = max_workers
-        self.drunks = [Drunk(seed, **params) for seed in self.seeds]
 
     @property
     def positions(self) -> list[tuple[float, float]]:
@@ -87,6 +80,10 @@ class CompositeDrunk(Drunk):
     def num_steps(self) -> int:
         """Number of steps each member has taken."""
         return self.drunks[0].num_steps
+
+    def distance_from_origin(self) -> float:
+        """Straight-line distance of the centroid from the starting point (0, 0)."""
+        return math.hypot(*self.location)
 
     def _pool(self) -> ProcessPoolExecutor:
         """Create a process pool sized to the members and ``max_workers``."""
@@ -106,42 +103,48 @@ class CompositeDrunk(Drunk):
     def steps(self, n: int = 100) -> tuple[float, float]:
         """Advance every member by ``n`` steps in parallel and return the final centroid."""
         with self._pool() as pool:
-            # map() preserves input order; members are replaced by the advanced
-            # copies returned from the workers, only after all have finished.
-            self.drunks = list(pool.map(_run_steps, self.drunks, [n] * len(self.drunks)))
+            advanced = list(pool.map(_run_steps, self.drunks, [n] * len(self.drunks)))
+        # Workers advanced copies; copy their state (deposits and RNG) back onto
+        # the original objects so callers' references to the members stay current.
+        for drunk, result in zip(self.drunks, advanced):
+            vars(drunk).update(vars(result))
         return self.location
 
     def density(self, gx: np.ndarray, gy: np.ndarray, cutoff: float = 1 / 4096) -> np.ndarray:
-        """Sum of all members' deposits on the regular grid ``gx`` x ``gy``, shape ``(len(gy), len(gx))``."""
-        return np.sum([d.density(gx, gy, cutoff) for d in self.drunks], axis=0)
+        """Sum of all members' deposits on the grid ``gx`` x ``gy``, normalised to [0, 1].
+
+        The sum is divided by its maximum over this grid, so the peak is 1.
+        Returns shape ``(len(gy), len(gx))``.
+        """
+        return _normalise(np.sum([d.density(gx, gy, cutoff) for d in self.drunks], axis=0))
 
     def to_png(self, filename: Path | str, grid_points: int = 400, cutoff: float = 1 / 4096) -> None:
-        """Save a heatmap of the sum of all members' deposits, with every member's path overlaid.
+        """Save a heatmap of the sum of all members' deposits, normalised to [0, 1].
 
         Each member's field is evaluated in parallel on a shared grid that
-        covers all members' paths plus a three-standard-deviation margin.
-        Deposits are truncated below ``cutoff`` times their peak.
+        covers all members' paths plus a margin of three standard deviations
+        of the widest member's deposits. Deposits are truncated below
+        ``cutoff`` times their peak.
         """
         paths = [np.array(d.positions) for d in self.drunks]
-        gx, gy = square_grid(np.vstack(paths), 3.0 * math.sqrt(self.variance), grid_points)
+        margin = 3.0 * math.sqrt(max(d.variance for d in self.drunks))
+        gx, gy = square_grid(np.vstack(paths), margin, grid_points)
         with self._pool() as pool:
             n = len(self.drunks)
             fields = list(pool.map(_density, self.drunks, [gx] * n, [gy] * n, [cutoff] * n))
         # Summed in member order in the parent, so the result is deterministic.
-        field = np.sum(fields, axis=0)
+        field = _normalise(np.sum(fields, axis=0))
         title = (
             f"CompositeDrunk of {len(self.drunks)}: {self.num_steps} steps each, "
             f"centroid distance {self.distance_from_origin():.2f}"
         )
-        save_heatmap(filename, field, gx, gy, paths, title)
+        save_heatmap(filename, field, gx, gy, title, label="normalised summed deposit amplitude")
 
     def __str__(self) -> str:
         """Summary of the composite followed by one line per member."""
         x, y = self.location
         header = (
-            f"CompositeDrunk(n={len(self.drunks)}, step_size={self.step_size}, kappa_max={self.kappa_max}, "
-            f"r0={self.r0}, variance={self.variance}, decay={self.decay}, steps={self.num_steps}, "
+            f"CompositeDrunk(n={len(self.drunks)}, steps={self.num_steps}, "
             f"centroid=({x:.2f}, {y:.2f}), centroid_distance={self.distance_from_origin():.2f})"
         )
         return "\n".join([header] + [f"  {d}" for d in self.drunks])
-

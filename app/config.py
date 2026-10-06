@@ -17,9 +17,11 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
 @dataclass(frozen=True)
 class CompositeConfig:
-    """Which composite drunks to build."""
+    """The composite drunks built by main.py: member counts and kappa_max range."""
 
     sizes: tuple[int, ...]
+    kappa_max_start: float
+    kappa_max_end: float
 
 
 @dataclass(frozen=True)
@@ -35,7 +37,6 @@ class WalkConfig:
 
     num_steps: int
     step_size: float
-    kappa_max: float
     r0: float
 
 
@@ -103,7 +104,11 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
 
     base_dir = config_path.parent
     composite_raw = _require(raw, "composite", "")
-    composite = CompositeConfig(sizes=tuple(int(n) for n in _require(composite_raw, "sizes", "composite")))
+    composite = CompositeConfig(
+        sizes=tuple(int(n) for n in _require(composite_raw, "sizes", "composite")),
+        kappa_max_start=float(_require(composite_raw, "kappa_max_start", "composite")),
+        kappa_max_end=float(_require(composite_raw, "kappa_max_end", "composite")),
+    )
     parallel_raw = _require(raw, "parallel", "")
     max_workers = _require(parallel_raw, "max_workers", "parallel")
     parallel = ParallelConfig(max_workers=None if max_workers is None else int(max_workers))
@@ -111,7 +116,6 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     walk = WalkConfig(
         num_steps=int(_require(walk_raw, "num_steps", "walk")),
         step_size=float(_require(walk_raw, "step_size", "walk")),
-        kappa_max=float(_require(walk_raw, "kappa_max", "walk")),
         r0=float(_require(walk_raw, "r0", "walk")),
     )
     deposit_raw = _require(raw, "deposit", "")

@@ -29,13 +29,12 @@ def save_heatmap(
     field: np.ndarray,
     gx: np.ndarray,
     gy: np.ndarray,
-    paths: list[np.ndarray],
     title: str,
+    label: str = "summed deposit amplitude",
 ) -> None:
-    """Save ``field`` (sampled on ``gx`` x ``gy``) as a heatmap with each path overlaid faintly.
+    """Save ``field`` (sampled on ``gx`` x ``gy``) as a heatmap, with ``label`` on the colour bar.
 
-    Each entry of ``paths`` is an (N, 2) array of visited locations starting at
-    the origin; its start and end are marked. Parent folders are created if needed.
+    Parent folders are created if needed.
     """
     path = Path(filename)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,17 +47,10 @@ def save_heatmap(
         cmap="magma",
         interpolation="bilinear",
     )
-    fig.colorbar(image, ax=ax, label="summed deposit amplitude")
-    for i, p in enumerate(paths):
-        # Label only the first path's markers so the legend has one entry each.
-        first = i == 0
-        ax.plot(p[:, 0], p[:, 1], "-", color="white", linewidth=0.6, alpha=0.35)
-        ax.plot(p[0, 0], p[0, 1], "o", color="tab:green", markersize=7, label="start" if first else None)
-        ax.plot(p[-1, 0], p[-1, 1], "s", color="tab:cyan", markersize=7, label="end" if first else None)
+    fig.colorbar(image, ax=ax, label=label)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_title(title)
-    ax.legend(loc="upper right", fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=100)
     plt.close(fig)
