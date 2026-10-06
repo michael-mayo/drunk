@@ -82,6 +82,44 @@ sea:
   # whatever its height distribution. Heights are not changed. 0 = no sea.
   water_fraction: 0.15
 
+drainage:
+  # Fill hollows (app/drainage.py, priority-flood) so every land cell drains
+  # to the sea: each hollow is raised to its spill level plus a tiny gradient.
+  # The generated terrain has ~11% of its land in depressions (real terrain
+  # ~1.5%); filling lets water reach the sea instead of pooling (needed for
+  # Cities: Skylines II's water). River carving fills before and after itself;
+  # with rivers disabled, this fill is applied on its own.
+  fill: true
+  # Gradient left across filled hollows, in normalised height per cell.
+  epsilon: 0.000001
+
+rivers:
+  # River drunks (app/rivers.py) walk from sources down the drainage, meander,
+  # join each other as tributaries or reach the sea, and carve graded valleys:
+  # riverbed slope ~ catchment area^-concavity, valley width ~ sqrt(area).
+  # Applied after sea level is set. Lengths in grid cells, so these depend on
+  # plot.grid_points. Defaults tuned with util/river_experiment*.yaml: channel
+  # concavity goes from ~0.10 (drained only) to ~0.33, matching real terrain.
+  enabled: true
+  # Number of river sources (Poisson-disk sampled; those in the sea are dropped).
+  sources: 100
+  # Sources must be this far above sea level (fraction of the land's height range).
+  min_source_height: 0.05
+  # Gaussian smoothing (cells) of the downstream-direction field the drunks follow.
+  direction_smoothing: 2.0
+  # von Mises concentration around the downstream direction (lower = more meandering).
+  kappa: 16.0
+  # Share of the previous heading kept each step.
+  inertia: 0.5
+  # Concavity of the graded riverbed: bed slope ~ area^-concavity.
+  concavity: 0.45
+  # Valley half-width (Gaussian sigma, cells) = valley_width * sqrt(catchment cells).
+  valley_width: 0.03
+  # Narrowest valley sigma, in cells.
+  min_valley_sigma: 1.0
+  # Steps without getting closer to the sea before switching to steepest descent.
+  stall_steps: 50
+
 paths:
   # Folder of sample input images.
   sample_images_dir: sample_images

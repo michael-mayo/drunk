@@ -1,0 +1,35 @@
+# River experiment: apply draining-only and river-carving variants to cached
+# maps and compare the results with real terrain.
+# Run with: python util/river_experiment.py [--config util/river_experiment.yaml]
+
+# Prefix for the output files in output/experiments/.
+name: rivers_round2
+# Maps are generated once from config.yaml (one per seed) and cached in
+# output/experiments/map_cache/.
+seeds: [41, 42, 43, 44, 45, 46, 47, 48, 49, 50]
+
+reference:
+  # Folder of Copernicus GLO-30 tiles, relative to the project root.
+  dem_dir: data/dem
+  side_m: 14336.0
+  crops_per_tile: 8
+
+# Every config starts from these and overrides some. Keys:
+#   rivers         carve rivers (false = drain only)
+#   river_params   overrides of config.yaml's rivers parameters
+baseline:
+  rivers: true
+  river_params: {}
+
+# Round 2: round 1's best single changes were fewer sources (100), smoother
+# paths (kappa 16) and narrower valleys (0.03). These combine them.
+configs:
+  sources100: {river_params: {sources: 100}}
+  s50: {river_params: {sources: 50}}
+  s150: {river_params: {sources: 150}}
+  s100_k16: {river_params: {sources: 100, kappa: 16.0}}
+  s100_v0.03: {river_params: {sources: 100, valley_width: 0.03}}
+  s100_k16_v0.03: {river_params: {sources: 100, kappa: 16.0, valley_width: 0.03}}
+  s150_k16_v0.03: {river_params: {sources: 150, kappa: 16.0, valley_width: 0.03}}
+  s100_k16_v0.03_c0.35: {river_params: {sources: 100, kappa: 16.0, valley_width: 0.03, concavity: 0.35}}
+  s100_k16_v0.04_in0.7: {river_params: {sources: 100, kappa: 16.0, valley_width: 0.04, inertia: 0.7}}

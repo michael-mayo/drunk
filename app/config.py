@@ -11,6 +11,8 @@ from typing import Any
 
 import yaml
 
+from app.rivers import RiverParams
+
 # Default config file location: config.yaml at the project root.
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
@@ -75,6 +77,22 @@ class SeaConfig:
 
 
 @dataclass(frozen=True)
+class DrainageConfig:
+    """Hollow filling, so all land drains to the sea."""
+
+    fill: bool
+    epsilon: float
+
+
+@dataclass(frozen=True)
+class RiversConfig:
+    """Whether to carve rivers with river drunks, and their parameters."""
+
+    enabled: bool
+    params: RiverParams
+
+
+@dataclass(frozen=True)
 class PathsConfig:
     """Filesystem locations used by the project."""
 
@@ -94,6 +112,8 @@ class Config:
     deposit: DepositConfig
     plot: PlotConfig
     sea: SeaConfig
+    drainage: DrainageConfig
+    rivers: RiversConfig
     paths: PathsConfig
 
 
@@ -157,6 +177,21 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     )
     sea_raw = _require(raw, "sea", "")
     sea = SeaConfig(water_fraction=float(_require(sea_raw, "water_fraction", "sea")))
+    drainage_raw = _require(raw, "drainage", "")
+    drainage = DrainageConfig(
+        fill=bool(_require(drainage_raw, "fill", "drainage")),
+        epsilon=float(_require(drainage_raw, "epsilon", "drainage")),
+    )
+    rivers_raw = _require(raw, "rivers", "")
+    float_keys = ("min_source_height", "direction_smoothing", "kappa", "inertia", "concavity", "valley_width", "min_valley_sigma")
+    int_keys = ("sources", "stall_steps")
+    rivers = RiversConfig(
+        enabled=bool(_require(rivers_raw, "enabled", "rivers")),
+        params=RiverParams(
+            **{k: float(_require(rivers_raw, k, "rivers")) for k in float_keys},
+            **{k: int(_require(rivers_raw, k, "rivers")) for k in int_keys},
+        ),
+    )
     paths_raw = _require(raw, "paths", "")
     paths = PathsConfig(
         sample_images_dir=_resolve(base_dir, _require(paths_raw, "sample_images_dir", "paths")),
@@ -171,5 +206,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         deposit=deposit,
         plot=plot,
         sea=sea,
+        drainage=drainage,
+        rivers=rivers,
         paths=paths,
     )

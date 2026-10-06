@@ -18,8 +18,10 @@ except for a random seed, a home position (Poisson-disk sampled inside the 96 ×
 power-log spacing that puts most drunks at the weakly biased end (see
 [`kappa_max` spacing](#kappa_max-spacing)). The map **wraps around** at its edges (see
 [Wrap-around map](#wrap-around-map)). Sea level is then set so that 15% of each map is sea (see
-[Sea level](#sea-level)). For each map it prints a summary and saves the height field, scaled to
-[0, 1], as a terrain-map PNG with sea and land.
+[Sea level](#sea-level)). River drunks then carve graded river valleys down to the sea, and every
+land cell is made to drain to the sea (see [River carving](#river-carving) and
+[Drainage](#drainage)). For each map it prints a summary and saves the height field, scaled to
+[0, 1], as a terrain-map PNG with sea, land and rivers.
 
 ### Sample output
 
@@ -28,8 +30,9 @@ power-log spacing that puts most drunks at the weakly biased end (see
 | ![Terrain, seed 41](sample_images/terrain_seed41.png) | ![Terrain, seed 42](sample_images/terrain_seed42.png) | ![Terrain, seed 43](sample_images/terrain_seed43.png) |
 
 Each map has relief at every scale, from small bumps on the finest layer to the broad highlands
-and basins of the coarsest, and fills the whole square evenly up to the edges. The lowest 15% is
-drawn as sea (blues, darker with depth), with the coastline outlined.
+and basins of the coarsest, and fills the whole square evenly up to the edges. Sea level is set so
+15% of the map is sea (blues, darker with depth, coastline outlined). Filled hollows appear as
+flat patches of land, where lakes would otherwise sit.
 
 Sample images are kept in [`sample_images/`](sample_images/) (generated with the `config.yaml`
 values listed under [Configuration](#configuration)).
@@ -91,7 +94,8 @@ flowchart LR
     L --> W["steps(num_steps)<br/>each layer's drunks walk in parallel"]
     W --> F["density(grid, period=domain): drunks evaluated in parallel batches<br/>→ one field per layer (coarse grid, wrap-around)<br/>→ resample, scale to unit std, weight, sum<br/>→ scale to [0, 1]"]
     F --> SL["post-processing: sea_level(field, water_fraction)<br/>height below which 15% of the map lies"]
-    SL --> P["save_terrain_map(file, field, sea_level)"]
+    SL --> RV["post-processing: carve_rivers(field, sea_level, params, seed)<br/>drain → river drunks walk down the drainage and carve graded valleys → drain again"]
+    RV --> P["save_terrain_map(file, field, sea_level, rivers)"]
     P --> O["output/terrain_seedN.png"]
 ```
 
@@ -272,8 +276,8 @@ mountain and upland regions:
 | Single composite (old default) | 4.28 | 0.47 | 0.08 | +2.37 |
 | `LayeredDrunk`, wrap-around (current default) | 3.84 | 0.50 | 0.46 | +0.06 |
 
-The layered model lacks long, oriented valleys and ridges, which in real terrain mostly come from
-drainage and erosion.
+The layered model on its own lacks long, oriented valleys and ridges, which in real terrain mostly come from
+drainage and erosion; river carving ([River carving](#river-carving)) adds valleys.
 
 ### Sea level
 
@@ -287,6 +291,92 @@ later, as the base level that rivers drain to.
 
 At present everything below sea level counts as sea, including landlocked hollows, so the sea in
 the sample maps is a scatter of basins rather than one connected ocean.
+
+### River carving
+
+River carving (`app/rivers.py`) is applied after sea level is set. It is drunk-like: **river
+drunks** walk from sources down the drainage and carve graded valleys.
+
+1. **Drain and route.** The map is drained first ([Drainage](#drainage)), so every land cell has a
+   downhill path to the sea, and flow is routed to give each cell a downstream direction and a
+   catchment area.
+2. **Sources.** `rivers.sources` points are Poisson-disk sampled over the map (wrap-around); those
+   in the sea or less than `min_source_height` above it are dropped. Rivers are walked from the
+   highest source down, so long trunk rivers tend to come first.
+3. **Walk.** Each river drunk steps one cell at a time. Its direction is a von Mises draw centred on
+   a blend of its previous heading (`inertia`) and the downstream direction, smoothed over
+   `direction_smoothing` cells, with concentration `kappa`: rivers meander but follow the valleys.
+   It stops when it reaches the sea or meets a river already carved, becoming a tributary. If it
+   makes no progress towards the sea for `stall_steps` steps (circling on flat ground), it switches
+   to the steepest-descent path.
+4. **Carve.** The riverbed descends from the source to the mouth (the sea, or the riverbed at the
+   junction, so tributaries join at the same level) with a graded profile,
+   `bed slope = k · A^−concavity`, where `A` is the catchment area and `k` makes the bed start at
+   the source's height. The bed never rises above the terrain and always descends downstream.
+   Around it the terrain is lowered towards the bed with a Gaussian cross-section of width
+   `valley_width · √A` cells (at least `min_valley_sigma`), forming the valley.
+5. **Drain again,** so the final map still drains everywhere.
+
+It runs in compiled numba code from the map's seed, in about 0.2 s per 400 × 400 map. It returns
+each river cell's catchment area, which the saved map uses to draw rivers as semi-transparent
+light-blue lines that widen and strengthen downstream (with the log of catchment area). The colour
+only marks where rivers run: the channels are not cut to sea level. Their beds follow the graded
+profile from each source's height, so river cells lie at a median of 15–24% of the land's height
+range above sea level (only about a tenth within 2% of it, near the mouths), and channels are
+typically lowered by about 1–2% of the relief (10–18 m for a 1000 m relief).
+
+**Tuning.** `util/river_experiment.py` compared variants with 48 real-terrain crops (10 maps each;
+`util/river_experiment.yaml` and `_round2.yaml`):
+
+| | β | H | HI | Skewness | Concavity θ | Distance |
+|---|---|---|---|---|---|---|
+| Real terrain | 3.91 ± 0.55 | 0.56 ± 0.15 | 0.43 ± 0.09 | +0.15 ± 0.50 | 0.33 ± 0.07 | 0 |
+| Drained only | 3.82 | 0.51 | 0.47 | +0.04 | 0.10 | 1.64 |
+| Rivers, 200 sources, `kappa` 4, valley 0.05 | 3.75 | 0.50 | 0.46 | +0.09 | 0.28 | 0.45 |
+| **Rivers, 100 sources, `kappa` 16, valley 0.03 (default)** | 3.74 | 0.50 | 0.47 | +0.07 | **0.33** | **0.32** |
+| Rivers, 400–800 sources | 3.67–3.72 | 0.49–0.50 | 0.46 | +0.09–0.11 | 0.27 | 0.56–0.57 |
+
+River carving is the first step that brings channel concavity up to real terrain's (from 0.10 to
+0.33, per-map median 0.31), and the other statistics stay close to nature. The best combinations
+in round 2 were all within noise of each other (distance 0.30–0.34), so the default was chosen for
+looks: smoother rivers and narrower valleys than the alternatives. The map-wide concavity barely
+depends on the riverbed's own `concavity` setting (0.25 to 0.45 changes it by ~0.01), because it
+mixes the carved rivers with the many uncarved small channels; it depends more on how many rivers
+there are.
+
+**Known artefact:** where a river falls back to steepest descent across a filled flat, its path
+can run in a straight line.
+
+### Drainage
+
+The generated terrain drains poorly: about 11% of its land lies in closed depressions (hollows
+with no downhill path out), against about 1.5% for real terrain. `fill_hollows` (`app/drainage.py`)
+fixes this with a priority-flood fill (Barnes et al., 2014), working inwards from the sea: every
+hollow is raised to its spill level, plus a tiny gradient (`drainage.epsilon`) so water still
+flows across it. Afterwards every land cell has a downhill path to the sea, as Cities: Skylines II's
+water simulation needs (otherwise water would pool in thousands of small hollows). Filled hollows
+become flat patches, where lakes would otherwise be. River carving drains the map before and after
+itself; with `rivers.enabled: false`, `drainage.fill` applies the fill on its own.
+
+Draining is a functional fix, not a realism one. It changes little: on a typical map about 16% of
+the land is raised, mostly by around 2.5% of the relief (90% by less than 10%), in small pockets
+scattered among the hills, so drained and undrained maps look much alike. Channel concavity is
+unchanged by it, and the other terrain statistics barely move; carving rivers is what changes
+them.
+
+`flow_accumulation` routes flow from each cell to its steepest downhill neighbour (D8) and counts
+the catchment area draining through each cell. It is used to measure drainage against real
+terrain:
+
+- **Channel concavity θ:** fitted from `slope ∝ area^−θ` over channel cells (catchments of at least
+  50 cells, leaving out near-flat cells such as filled hollows, whose tiny drainage gradient would
+  otherwise destabilise the fit). Real terrain crops give 0.33 ± 0.07; the generated terrain gives
+  0.10 ± 0.04 drained or not, and 0.33 with rivers carved.
+- **Depression fraction:** the share of land that must be raised by more than 0.1% of the relief
+  to drain.
+
+Both work on the wrap-around map (draining to the sea) and on real-terrain crops (draining off the
+edges too).
 
 ## Requirements
 
@@ -335,6 +425,7 @@ seed 41: LayeredDrunk(layers=4, scales=[0.5, 1.0, 2.0, 4.0], h=0.5, steps=1000)
   scale=2: 200 drunks, step_size=2, r0=20, variance=4, kappa_max 0.01-0.4
   scale=4: 200 drunks, step_size=4, r0=40, variance=16, kappa_max 0.01-0.4
   sea level 0.301 (15.0% of the map is sea)
+  rivers: 73 carved (53 reach the sea, 20 are tributaries); every land cell drains to the sea
 Saved /home/michael/drunk/output/terrain_seed41.png
 seed 42: ...
 Saved /home/michael/drunk/output/terrain_seed42.png
@@ -372,6 +463,18 @@ folder containing `config.yaml`.
 | `plot.grid_points` | int | `400` | Points per side of the grid used to render the summed deposits |
 | `plot.cutoff` | float | `0.000244140625` (1/4096) | Each Gaussian is evaluated only where it exceeds `cutoff` × its peak (≈ 4.08 sd); `0` = exact |
 | `sea.water_fraction` | float | `0.15` | Fraction of each map that is sea; sea level is the height below which this fraction lies. Must be in [0, 1); `0` = no sea |
+| `drainage.fill` | bool | `true` | Fill hollows so all land drains to the sea (when rivers are off; river carving always drains) |
+| `drainage.epsilon` | float | `0.000001` | Gradient left across filled hollows, in normalised height per cell |
+| `rivers.enabled` | bool | `true` | Carve rivers with river drunks after setting sea level |
+| `rivers.sources` | int | `100` | River sources, Poisson-disk sampled (those in or near the sea are dropped) |
+| `rivers.min_source_height` | float | `0.05` | Minimum source height above sea level, as a fraction of the land's height range |
+| `rivers.direction_smoothing` | float | `2.0` | Gaussian smoothing (cells) of the downstream-direction field |
+| `rivers.kappa` | float | `16.0` | von Mises concentration around the downstream direction (lower = more meandering) |
+| `rivers.inertia` | float | `0.5` | Share of the previous heading kept each step |
+| `rivers.concavity` | float | `0.45` | Graded riverbed: bed slope ∝ catchment area^−concavity |
+| `rivers.valley_width` | float | `0.03` | Valley half-width (Gaussian sigma, cells) = `valley_width × √(catchment cells)` |
+| `rivers.min_valley_sigma` | float | `1.0` | Narrowest valley sigma, in cells |
+| `rivers.stall_steps` | int | `50` | Steps without progress towards the sea before switching to steepest descent |
 | `paths.sample_images_dir` | path | `sample_images` | Folder of sample images shown in this README |
 | `paths.output_dir` | path | `output` | Folder where generated PNGs are written (git-ignored) |
 
@@ -388,9 +491,11 @@ except for seed, home and `kappa_max`, which is spread from `composite.kappa_max
 every layer. It wraps each layer's drunks in a `CompositeDrunk`, combines the layers in a
 `LayeredDrunk` with weighting exponent `layers.h`, runs it for `walk.num_steps` steps, prints its
 summary, and evaluates the wrap-around height field over the `plot.domain` square. It then sets
-sea level from `sea.water_fraction`, prints it, and saves a terrain map (sea in blues, land in
-terrain colours, coastline outlined, sea level marked on the colour bar) to
-`<output_dir>/terrain_seed<seed>.png`.
+sea level from `sea.water_fraction` and prints it. If `rivers.enabled`, it carves rivers with the
+map's seed (draining before and after) and prints how many were carved; otherwise, if
+`drainage.fill`, it fills hollows so all land drains to the sea. It saves the final terrain map
+(sea in blues, land in terrain colours, rivers as light-blue lines widening downstream, coastline outlined, sea level marked on
+the colour bar) to `<output_dir>/terrain_seed<seed>.png`.
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -403,6 +508,30 @@ python app/main.py                          # use config.yaml at the project roo
 python app/main.py --config my_config.yaml  # use an alternative config file
 python -m app.main                          # same, run as a module
 ```
+
+### `util/river_experiment.py`
+
+Tunes river carving against real terrain. It generates one map per seed in the experiment YAML from
+`config.yaml` (cached in `output/experiments/map_cache/`, since generation is the slow part), then
+applies each variant: draining only, or river carving with overridden parameters. For each result
+it computes the four terrain statistics plus channel concavity (`util/terrain_stats`), compares
+them with real-terrain crops, and ranks variants by RMS z-score. (The depression fraction isn't
+used, since every variant drains the map.) Results go to `output/experiments/<name>_summary.txt`,
+`<name>_maps.csv` and `<name>_contact_sheet.png`.
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `--config` | path | optional | `util/river_experiment.yaml` | Experiment YAML file |
+| `--app-config` | path | optional | `config.yaml` | App config supplying generation settings and default river parameters |
+
+```bash
+python util/river_experiment.py                                          # round 1
+python util/river_experiment.py --config util/river_experiment_round2.yaml
+```
+
+Each experiment YAML has a `name` (output prefix), `seeds`, `reference` (tiles, crop size, crops
+per tile), a `baseline` (`rivers`: carve or drain only; `river_params`: overrides of
+`config.yaml`'s `rivers` settings) and `configs` overriding the baseline.
 
 ### `util/terrain_experiment.py`
 
@@ -543,10 +672,18 @@ classDiagram
         class rendering {
             +square_grid(points, margin, grid_points)
             +save_heatmap(filename, field, gx, gy, title, label)
-            +save_terrain_map(filename, field, gx, gy, title, sea_level)
+            +save_terrain_map(filename, field, gx, gy, title, sea_level, rivers)
         }
         class sea {
             +sea_level(field, water_fraction) float
+        }
+        class drainage {
+            +fill_hollows(field, outlets, periodic, epsilon) ndarray
+            +flow_accumulation(field, periodic) tuple
+        }
+        class rivers {
+            +RiverParams
+            +carve_rivers(field, sea_level, params, seed, epsilon) tuple
         }
         class load_config {
             +load_config(path) Config
@@ -573,6 +710,10 @@ classDiagram
     main ..> CompositeDrunk : one per layer
     main ..> LayeredDrunk : combines layers & runs
     main ..> sea : sets sea level
+    main ..> rivers : carves rivers
+    main ..> drainage : fills hollows (rivers off)
+    rivers ..> drainage : drains, routes flow
+    rivers ..> sampling : draws sources
     main ..> rendering : saves terrain map
     LayeredDrunk "1" *-- "4" CompositeDrunk : one per scale
     LayeredDrunk ..> ProcessPool : density() batches of drunks
@@ -623,11 +764,15 @@ drunk/
 │   ├── rendering.py       # Shared grid and heatmap PNG rendering
 │   ├── sampling.py        # Poisson-disk start positions and power-log spacing
 │   ├── sea.py             # Sea level from the fraction of the map that is water
+│   ├── drainage.py        # Hollow filling and D8 flow routing (numba)
+│   ├── rivers.py          # River drunks: walk the drainage, carve graded valleys (numba)
 │   └── main.py            # Entry point: builds the layers, runs them, saves the height map
 ├── util/                  # Standalone tools
+│   ├── river_experiment.py          # Tunes river carving against real terrain
+│   ├── river_experiment*.yaml       # River experiment definitions (rounds 1-2)
 │   ├── terrain_experiment.py        # Compares generated maps with real terrain statistics
 │   ├── terrain_experiment*.yaml     # Experiment definitions (phases 1-6)
-│   ├── terrain_stats.py             # Scale-free terrain statistics
+│   ├── terrain_stats.py             # Scale-free terrain and drainage statistics
 │   └── reference_terrain.py         # Square crops from Copernicus DEM tiles
 ├── data/dem/              # Reference elevation tiles (git-ignored; see Setup)
 ├── sample_images/         # Sample output images shown in this README

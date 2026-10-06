@@ -71,6 +71,21 @@ def _sea_and_land_colormap(sea_level: float, vmin: float, vmax: float, n: int = 
     return ListedColormap(np.vstack([sea, land]))
 
 
+def _draw_rivers(ax: plt.Axes, area: np.ndarray, gx: np.ndarray, gy: np.ndarray) -> None:
+    """Draw river cells as light-blue dots sized and shaded by log catchment area (larger rivers on top)."""
+    iy, ix = np.nonzero(area > 0)
+    a = np.log(area[iy, ix])
+    t = (a - a.min()) / (a.max() - a.min()) if a.max() > a.min() else np.ones_like(a)
+    order = np.argsort(t)
+    # Dot diameter in points, roughly one grid cell at the smallest and ~3 cells for the largest rivers.
+    cell_pt = ax.get_window_extent().width * 72.0 / ax.figure.dpi / len(gx)
+    diameter = cell_pt * (0.8 + 2.2 * t[order])
+    colours = np.zeros((len(order), 4))
+    colours[:, :3] = (0.35, 0.75, 1.0)
+    colours[:, 3] = 0.35 + 0.45 * t[order]
+    ax.scatter(gx[ix[order]], gy[iy[order]], s=diameter**2, c=colours, marker="o", linewidths=0)
+
+
 def save_terrain_map(
     filename: Path | str,
     field: np.ndarray,
@@ -78,11 +93,16 @@ def save_terrain_map(
     gy: np.ndarray,
     title: str,
     sea_level: float,
+    rivers: np.ndarray | None = None,
 ) -> None:
     """Save ``field`` as a terrain map: sea below ``sea_level`` in blues, land above in terrain colours.
 
     The coastline is drawn as a thin contour, and the sea level is marked on
-    the colour bar. Parent folders are created if needed.
+    the colour bar. If ``rivers`` is given (each river cell's catchment area,
+    0 elsewhere), rivers are drawn as semi-transparent light-blue lines that
+    widen and strengthen downstream with the log of catchment area, so they
+    read as channels in the terrain rather than as sea. Parent folders are
+    created if needed.
     """
     path = Path(filename)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,6 +120,8 @@ def save_terrain_map(
         interpolation="bilinear",
     )
     ax.contour(field, levels=[sea_level], colors="navy", linewidths=0.5, origin="lower", extent=extent)
+    if rivers is not None and np.any(rivers > 0):
+        _draw_rivers(ax, rivers, gx, gy)
     bar = fig.colorbar(image, ax=ax, label="normalised height")
     bar.ax.axhline(sea_level, color="black", linewidth=1.0)
     bar.ax.text(1.6, sea_level, "sea level", transform=bar.ax.get_yaxis_transform(), va="center", fontsize=8)

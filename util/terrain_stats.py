@@ -105,3 +105,61 @@ def terrain_stats(z: np.ndarray) -> TerrainStats:
         hypsometric_integral=hypsometric_integral(z),
         skewness=skewness(z),
     )
+
+
+# Fill depth, as a fraction of the field's relief, above which a cell counts as
+# lying in a real depression (shallower dents are measurement-scale noise).
+DEPRESSION_DEPTH = 1e-3
+# Smallest catchment (in cells) counted as a channel for the slope-area fit.
+CHANNEL_MIN_AREA = 50
+# Channel cells flatter than this (height change per cell, as a fraction of
+# the relief) are left out of the fit: filled hollows are near-flat surfaces
+# whose tiny drainage gradient would otherwise dominate and destabilise it.
+CHANNEL_MIN_SLOPE = 1e-4
+
+
+@dataclass(frozen=True)
+class DrainageStats:
+    """Drainage statistics of one height field."""
+
+    # Channel concavity theta in slope ~ area^-theta (natural rivers ~0.4-0.6).
+    concavity: float
+    # Fraction of land that must be filled by more than DEPRESSION_DEPTH x relief to drain.
+    depression_fraction: float
+
+
+def drainage_stats(z: np.ndarray, outlets: np.ndarray, periodic: bool) -> DrainageStats:
+    """Compute drainage statistics for height field ``z``.
+
+    ``outlets`` marks cells water leaves by (sea); on a non-periodic grid the
+    edges are outlets too. The field is first filled so every cell drains
+    (``app.drainage.fill_hollows``); the depression fraction is the share of
+    non-outlet cells raised by more than ``DEPRESSION_DEPTH`` of the relief.
+    Flow is then routed (D8) on the filled field, and the concavity is the
+    negative slope of a log-log fit of median channel slope against
+    catchment area, over logarithmic area bins from ``CHANNEL_MIN_AREA``
+    cells up. Near-flat cells (slope below ``CHANNEL_MIN_SLOPE`` x relief per
+    cell, such as filled hollows) are excluded, for real and generated
+    terrain alike.
+    """
+    # Imported here so the generation-only statistics don't need numba.
+    from app.drainage import fill_hollows
+    from app.drainage import flow_accumulation
+
+    z = np.asarray(z, dtype=float)
+    relief = float(z.max() - z.min()) or 1.0
+    filled = fill_hollows(z, outlets, periodic, epsilon=1e-9 * relief)
+    land = ~outlets
+    depression_fraction = float(np.mean((filled - z)[land] > DEPRESSION_DEPTH * relief))
+    area, slope = flow_accumulation(filled, periodic)
+    channel = land & (area >= CHANNEL_MIN_AREA) & (slope > CHANNEL_MIN_SLOPE * relief)
+    a, s = area[channel], slope[channel]
+    edges = np.geomspace(CHANNEL_MIN_AREA, max(a.max(), CHANNEL_MIN_AREA * 2), 13)
+    xs, ys = [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        m = (a >= lo) & (a < hi)
+        if m.sum() >= 10:
+            xs.append(np.log(np.sqrt(lo * hi)))
+            ys.append(np.log(np.median(s[m])))
+    concavity = float(-np.polyfit(xs, ys, 1)[0]) if len(xs) >= 3 else float("nan")
+    return DrainageStats(concavity=concavity, depression_fraction=depression_fraction)

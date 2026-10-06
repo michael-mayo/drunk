@@ -1,0 +1,37 @@
+# River experiment: apply draining-only and river-carving variants to cached
+# maps and compare the results with real terrain.
+# Run with: python util/river_experiment.py [--config util/river_experiment.yaml]
+
+# Prefix for the output files in output/experiments/.
+name: rivers_round1
+# Maps are generated once from config.yaml (one per seed) and cached in
+# output/experiments/map_cache/.
+seeds: [41, 42, 43, 44, 45, 46, 47, 48, 49, 50]
+
+reference:
+  # Folder of Copernicus GLO-30 tiles, relative to the project root.
+  dem_dir: data/dem
+  side_m: 14336.0
+  crops_per_tile: 8
+
+# Every config starts from these and overrides some. Keys:
+#   rivers         carve rivers (false = drain only)
+#   river_params   overrides of config.yaml's rivers parameters
+baseline:
+  rivers: true
+  river_params: {}
+
+configs:
+  drained_only: {rivers: false}
+  defaults: {}
+  concavity0.25: {river_params: {concavity: 0.25}}
+  concavity0.35: {river_params: {concavity: 0.35}}
+  sources100: {river_params: {sources: 100}}
+  sources400: {river_params: {sources: 400}}
+  sources800: {river_params: {sources: 800}}
+  valley0.03: {river_params: {valley_width: 0.03}}
+  valley0.08: {river_params: {valley_width: 0.08}}
+  kappa8: {river_params: {kappa: 8.0}}
+  kappa16: {river_params: {kappa: 16.0}}
+  s400_c0.3: {river_params: {sources: 400, concavity: 0.3}}
+  s800_c0.25: {river_params: {sources: 800, concavity: 0.25}}

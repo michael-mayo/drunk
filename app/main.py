@@ -8,7 +8,8 @@ kappa_max with power-log spacing; every layer gets the same spacing. The map
 wraps around at its edges. One map is built per seed in ``config.yaml``; that
 seed drives the RNG that generates the map's drunk seeds and homes, so each
 map is reproducible from its seed. Sea level is then set so that a configured
-fraction of each map is water, and the map is rendered with sea and land.
+fraction of each map is water, river drunks carve graded river valleys (and
+hollows are filled so all land drains to the sea), and the map is rendered.
 """
 
 import argparse
@@ -26,9 +27,11 @@ from app.config import DEFAULT_CONFIG_PATH
 from app.config import Config
 from app.config import load_config
 from app.composite_drunk import CompositeDrunk
+from app.drainage import fill_hollows
 from app.drunk import Drunk
 from app.layered_drunk import LayeredDrunk
 from app.layered_drunk import periodic_axis
+from app.rivers import carve_rivers
 from app.rendering import save_terrain_map
 from app.sampling import poisson_disk_points
 from app.sampling import power_log_spacing
@@ -83,9 +86,10 @@ def main() -> None:
     """Load config and, for each seed, generate a layered height field, set its sea level, and save the map.
 
     Pipeline per map: build one composite layer per scale, walk the drunks,
-    evaluate the combined wrap-around height field, then set sea level from
-    ``sea.water_fraction`` (a post-processing step that leaves heights
-    unchanged) and render.
+    evaluate the combined wrap-around height field, then post-process: set sea
+    level from ``sea.water_fraction`` (heights unchanged), carve rivers with
+    river drunks if enabled (which also drains the map), or else just fill
+    hollows so all land drains to the sea, and render.
     """
     args = _parse_args()
     config = load_config(args.config)
@@ -102,9 +106,21 @@ def main() -> None:
         level = sea_level(field, config.sea.water_fraction)
         print(f"  sea level {level:.3f} ({np.mean(field < level):.1%} of the map is sea)")
 
+        river_area = None
+        if config.rivers.enabled:
+            field, river_area, carved, to_sea = carve_rivers(
+                field, level, config.rivers.params, seed, epsilon=config.drainage.epsilon
+            )
+            print(f"  rivers: {carved} carved ({to_sea} reach the sea, {carved - to_sea} are tributaries); "
+                  f"every land cell drains to the sea")
+        elif config.drainage.fill:
+            field = fill_hollows(field, field < level, periodic=True, epsilon=config.drainage.epsilon)
+            print("  filled hollows: every land cell now drains to the sea")
+
         filename = config.paths.output_dir / f"terrain_seed{seed}.png"
-        title = f"seed {seed}: {config.sea.water_fraction:.0%} sea, sea level {level:.3f}"
-        save_terrain_map(filename, field, grid, grid, title, level)
+        state = "rivers" if config.rivers.enabled else ("drained" if config.drainage.fill else "raw")
+        title = f"seed {seed} ({state}): sea level {level:.3f}, {np.mean(field < level):.0%} sea"
+        save_terrain_map(filename, field, grid, grid, title, level, rivers=river_area)
         print(f"Saved {filename}")
 
 
