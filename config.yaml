@@ -76,6 +76,12 @@ plot:
   # 0 = evaluate every Gaussian over the whole grid (exact, slow).
   cutoff: 0.000244140625  # 1/4096
 
+sea:
+  # Fraction of the map that is sea. Sea level is set to the height below which
+  # this fraction of the map lies, so every map gets the same share of water
+  # whatever its height distribution. Heights are not changed. 0 = no sea.
+  water_fraction: 0.15
+
 paths:
   # Folder of sample input images.
   sample_images_dir: sample_images

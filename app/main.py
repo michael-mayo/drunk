@@ -7,7 +7,8 @@ sampled inside the map, and the point each drunk is biased back towards) and a
 kappa_max with power-log spacing; every layer gets the same spacing. The map
 wraps around at its edges. One map is built per seed in ``config.yaml``; that
 seed drives the RNG that generates the map's drunk seeds and homes, so each
-map is reproducible from its seed.
+map is reproducible from its seed. Sea level is then set so that a configured
+fraction of each map is water, and the map is rendered with sea and land.
 """
 
 import argparse
@@ -27,8 +28,11 @@ from app.config import load_config
 from app.composite_drunk import CompositeDrunk
 from app.drunk import Drunk
 from app.layered_drunk import LayeredDrunk
+from app.layered_drunk import periodic_axis
+from app.rendering import save_terrain_map
 from app.sampling import poisson_disk_points
 from app.sampling import power_log_spacing
+from app.sea import sea_level
 
 
 def _parse_args() -> argparse.Namespace:
@@ -76,9 +80,16 @@ def _build_layer(config: Config, scale: float, rng: np.random.Generator) -> Comp
 
 
 def main() -> None:
-    """Load config and, for each seed, build a LayeredDrunk with one composite per scale, run it, and save its height map."""
+    """Load config and, for each seed, generate a layered height field, set its sea level, and save the map.
+
+    Pipeline per map: build one composite layer per scale, walk the drunks,
+    evaluate the combined wrap-around height field, then set sea level from
+    ``sea.water_fraction`` (a post-processing step that leaves heights
+    unchanged) and render.
+    """
     args = _parse_args()
     config = load_config(args.config)
+    grid = periodic_axis(config.plot.domain, config.plot.grid_points)
 
     for seed in config.seeds:
         rng = np.random.default_rng(seed)
@@ -86,14 +97,14 @@ def main() -> None:
         terrain = LayeredDrunk(layers, config.layers.scales, config.layers.h, max_workers=config.parallel.max_workers)
         terrain.steps(config.walk.num_steps)
         print(f"seed {seed}: {terrain}")
+
+        field = terrain.density(grid, grid, config.plot.cutoff, period=config.plot.domain)
+        level = sea_level(field, config.sea.water_fraction)
+        print(f"  sea level {level:.3f} ({np.mean(field < level):.1%} of the map is sea)")
+
         filename = config.paths.output_dir / f"terrain_seed{seed}.png"
-        terrain.to_png(
-            filename,
-            config.plot.domain,
-            grid_points=config.plot.grid_points,
-            cutoff=config.plot.cutoff,
-            label=f"seed {seed}",
-        )
+        title = f"seed {seed}: {config.sea.water_fraction:.0%} sea, sea level {level:.3f}"
+        save_terrain_map(filename, field, grid, grid, title, level)
         print(f"Saved {filename}")
 
 

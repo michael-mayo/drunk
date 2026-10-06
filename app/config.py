@@ -68,6 +68,13 @@ class PlotConfig:
 
 
 @dataclass(frozen=True)
+class SeaConfig:
+    """Sea level, set from the fraction of the map that is water."""
+
+    water_fraction: float
+
+
+@dataclass(frozen=True)
 class PathsConfig:
     """Filesystem locations used by the project."""
 
@@ -86,6 +93,7 @@ class Config:
     walk: WalkConfig
     deposit: DepositConfig
     plot: PlotConfig
+    sea: SeaConfig
     paths: PathsConfig
 
 
@@ -147,6 +155,8 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         grid_points=int(_require(plot_raw, "grid_points", "plot")),
         cutoff=float(_require(plot_raw, "cutoff", "plot")),
     )
+    sea_raw = _require(raw, "sea", "")
+    sea = SeaConfig(water_fraction=float(_require(sea_raw, "water_fraction", "sea")))
     paths_raw = _require(raw, "paths", "")
     paths = PathsConfig(
         sample_images_dir=_resolve(base_dir, _require(paths_raw, "sample_images_dir", "paths")),
@@ -160,5 +170,6 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         walk=walk,
         deposit=deposit,
         plot=plot,
+        sea=sea,
         paths=paths,
     )

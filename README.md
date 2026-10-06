@@ -17,8 +17,9 @@ except for a random seed, a home position (Poisson-disk sampled inside the 96 ×
 [Start positions](#start-positions)), and a homeward bias `kappa_max` spread from 0.01 to 0.4 with
 power-log spacing that puts most drunks at the weakly biased end (see
 [`kappa_max` spacing](#kappa_max-spacing)). The map **wraps around** at its edges (see
-[Wrap-around map](#wrap-around-map)). For each map it prints a summary and saves the combined
-height field, scaled to [0, 1], as a heatmap PNG.
+[Wrap-around map](#wrap-around-map)). Sea level is then set so that 15% of each map is sea (see
+[Sea level](#sea-level)). For each map it prints a summary and saves the height field, scaled to
+[0, 1], as a terrain-map PNG with sea and land.
 
 ### Sample output
 
@@ -27,7 +28,8 @@ height field, scaled to [0, 1], as a heatmap PNG.
 | ![Terrain, seed 41](sample_images/terrain_seed41.png) | ![Terrain, seed 42](sample_images/terrain_seed42.png) | ![Terrain, seed 43](sample_images/terrain_seed43.png) |
 
 Each map has relief at every scale, from small bumps on the finest layer to the broad highlands
-and basins of the coarsest, and fills the whole square evenly up to the edges.
+and basins of the coarsest, and fills the whole square evenly up to the edges. The lowest 15% is
+drawn as sea (blues, darker with depth), with the coastline outlined.
 
 Sample images are kept in [`sample_images/`](sample_images/) (generated with the `config.yaml`
 values listed under [Configuration](#configuration)).
@@ -87,9 +89,10 @@ flowchart LR
     D --> C["CompositeDrunk(drunks)<br/>one layer"]
     C -->|"4 layers, one per scale"| L["LayeredDrunk(layers, scales, h)"]
     L --> W["steps(num_steps)<br/>each layer's drunks walk in parallel"]
-    W --> P["to_png(file, domain)"]
-    P --> F["density(): drunks evaluated in parallel batches<br/>→ one field per layer (coarse grid, wrap-around)<br/>→ resample, scale to unit std, weight, sum<br/>→ scale to [0, 1]"]
-    F --> O["output/terrain_seedN.png"]
+    W --> F["density(grid, period=domain): drunks evaluated in parallel batches<br/>→ one field per layer (coarse grid, wrap-around)<br/>→ resample, scale to unit std, weight, sum<br/>→ scale to [0, 1]"]
+    F --> SL["post-processing: sea_level(field, water_fraction)<br/>height below which 15% of the map lies"]
+    SL --> P["save_terrain_map(file, field, sea_level)"]
+    P --> O["output/terrain_seedN.png"]
 ```
 
 `Drunk` and `CompositeDrunk` can also be used on their own: each has its own `density()` and
@@ -272,6 +275,19 @@ mountain and upland regions:
 The layered model lacks long, oriented valleys and ridges, which in real terrain mostly come from
 drainage and erosion.
 
+### Sea level
+
+Sea level is a post-processing step applied to the finished height field (`app/sea.py`). It is set
+from the fraction of the map that should be water, `sea.water_fraction` (15% by default): sea level
+is the height below which that fraction of the map lies (its quantile). Every map then gets the
+same share of sea whatever its height distribution, whereas a fixed height such as 0.2 would give
+very different amounts from seed to seed (the three sample maps have sea levels of 0.280 to 0.301).
+The heights themselves are not changed; sea level is just a value, used to draw the map and,
+later, as the base level that rivers drain to.
+
+At present everything below sea level counts as sea, including landlocked hollows, so the sea in
+the sample maps is a scatter of basins rather than one connected ocean.
+
 ## Requirements
 
 - Python 3.14
@@ -318,6 +334,7 @@ seed 41: LayeredDrunk(layers=4, scales=[0.5, 1.0, 2.0, 4.0], h=0.5, steps=1000)
   scale=1: 200 drunks, step_size=1, r0=10, variance=1, kappa_max 0.01-0.4
   scale=2: 200 drunks, step_size=2, r0=20, variance=4, kappa_max 0.01-0.4
   scale=4: 200 drunks, step_size=4, r0=40, variance=16, kappa_max 0.01-0.4
+  sea level 0.301 (15.0% of the map is sea)
 Saved /home/michael/drunk/output/terrain_seed41.png
 seed 42: ...
 Saved /home/michael/drunk/output/terrain_seed42.png
@@ -326,7 +343,7 @@ Saved /home/michael/drunk/output/terrain_seed43.png
 ```
 
 Maps are written to the configured output folder (default `output/`) as `terrain_seed<seed>.png`.
-A run of three maps takes about 60 s on a 12-core machine.
+A run of three maps takes about 50 s on a 12-core machine.
 
 ## Configuration
 
@@ -354,6 +371,7 @@ folder containing `config.yaml`.
 | `plot.domain` | float | `96.0` | Side of the square, wrap-around map area, centred on the origin, in walk units. Homes are Poisson-disk sampled inside it (minimum spacing chosen automatically from the number of drunks) |
 | `plot.grid_points` | int | `400` | Points per side of the grid used to render the summed deposits |
 | `plot.cutoff` | float | `0.000244140625` (1/4096) | Each Gaussian is evaluated only where it exceeds `cutoff` × its peak (≈ 4.08 sd); `0` = exact |
+| `sea.water_fraction` | float | `0.15` | Fraction of each map that is sea; sea level is the height below which this fraction lies. Must be in [0, 1); `0` = no sea |
 | `paths.sample_images_dir` | path | `sample_images` | Folder of sample images shown in this README |
 | `paths.output_dir` | path | `output` | Folder where generated PNGs are written (git-ignored) |
 
@@ -369,7 +387,9 @@ except for seed, home and `kappa_max`, which is spread from `composite.kappa_max
 `composite.kappa_max_end` with power-log spacing (exponent `composite.kappa_max_power`), the same in
 every layer. It wraps each layer's drunks in a `CompositeDrunk`, combines the layers in a
 `LayeredDrunk` with weighting exponent `layers.h`, runs it for `walk.num_steps` steps, prints its
-summary, and saves the wrap-around height map over the `plot.domain` square to
+summary, and evaluates the wrap-around height field over the `plot.domain` square. It then sets
+sea level from `sea.water_fraction`, prints it, and saves a terrain map (sea in blues, land in
+terrain colours, coastline outlined, sea level marked on the colour bar) to
 `<output_dir>/terrain_seed<seed>.png`.
 
 | Parameter | Type | Required | Default | Description |
@@ -523,6 +543,10 @@ classDiagram
         class rendering {
             +square_grid(points, margin, grid_points)
             +save_heatmap(filename, field, gx, gy, title, label)
+            +save_terrain_map(filename, field, gx, gy, title, sea_level)
+        }
+        class sea {
+            +sea_level(field, water_fraction) float
         }
         class load_config {
             +load_config(path) Config
@@ -548,6 +572,8 @@ classDiagram
     main ..> sampling : draws homes and kappa_max
     main ..> CompositeDrunk : one per layer
     main ..> LayeredDrunk : combines layers & runs
+    main ..> sea : sets sea level
+    main ..> rendering : saves terrain map
     LayeredDrunk "1" *-- "4" CompositeDrunk : one per scale
     LayeredDrunk ..> ProcessPool : density() batches of drunks
     LayeredDrunk ..> rendering : to_png uses
@@ -596,6 +622,7 @@ drunk/
 │   ├── gaussian.py        # GaussianDeposit: oriented anisotropic 2D Gaussian
 │   ├── rendering.py       # Shared grid and heatmap PNG rendering
 │   ├── sampling.py        # Poisson-disk start positions and power-log spacing
+│   ├── sea.py             # Sea level from the fraction of the map that is water
 │   └── main.py            # Entry point: builds the layers, runs them, saves the height map
 ├── util/                  # Standalone tools
 │   ├── terrain_experiment.py        # Compares generated maps with real terrain statistics
