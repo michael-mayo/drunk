@@ -22,6 +22,7 @@ class CompositeConfig:
     sizes: tuple[int, ...]
     kappa_max_start: float
     kappa_max_end: float
+    kappa_max_power: float
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         sizes=tuple(int(n) for n in _require(composite_raw, "sizes", "composite")),
         kappa_max_start=float(_require(composite_raw, "kappa_max_start", "composite")),
         kappa_max_end=float(_require(composite_raw, "kappa_max_end", "composite")),
+        kappa_max_power=float(_require(composite_raw, "kappa_max_power", "composite")),
     )
     parallel_raw = _require(raw, "parallel", "")
     max_workers = _require(parallel_raw, "max_workers", "parallel")

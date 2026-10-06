@@ -1,7 +1,7 @@
 """Entry point: simulate CompositeDrunks of several sizes and save an image of each one's combined deposits.
 
 For each configured size, the composite's members are identical except for a
-random seed and a kappa_max spaced logarithmically across the same configured
+random seed and a kappa_max with power-log spacing across the same configured
 range. A master RNG seeded from ``config.yaml`` generates all member seeds, so
 the whole run is reproducible from that single setting.
 """
@@ -36,11 +36,30 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _power_log_spacing(start: float, end: float, n: int, power: float) -> np.ndarray:
+    """Return ``n`` values from ``start`` to ``end`` spaced as ``start * (end / start) ** (t ** power)``.
+
+    ``t`` runs evenly from 0 to 1. ``power = 1`` is logarithmic spacing
+    (``np.geomspace``); ``power > 1`` crowds more values towards ``start``,
+    ``power < 1`` towards ``end``. Both ends must be positive.
+    """
+    if start <= 0 or end <= 0:
+        raise ValueError(f"power-log spacing needs positive ends, got {start} and {end}")
+    if power <= 0:
+        raise ValueError(f"power-log spacing needs a positive power, got {power}")
+    t = np.linspace(0.0, 1.0, n)
+    return start * (end / start) ** (t**power)
+
+
 def _build_drunks(config: Config, n: int, rng: np.random.Generator) -> list[Drunk]:
-    """Create ``n`` drunks, identical except for a seed drawn from ``rng`` and a log-spaced kappa_max."""
+    """Create ``n`` drunks, identical except for a seed drawn from ``rng`` and a power-log spaced kappa_max."""
     seeds = [int(s) for s in rng.integers(0, 2**32, size=n)]
-    # Logarithmic spacing: each member's kappa_max is a constant factor above the previous one.
-    kappa_maxes = np.geomspace(config.composite.kappa_max_start, config.composite.kappa_max_end, n)
+    kappa_maxes = _power_log_spacing(
+        config.composite.kappa_max_start,
+        config.composite.kappa_max_end,
+        n,
+        config.composite.kappa_max_power,
+    )
     return [
         Drunk(
             seed,
@@ -56,7 +75,7 @@ def _build_drunks(config: Config, n: int, rng: np.random.Generator) -> list[Drun
 
 
 def main() -> None:
-    """Load config, and for each composite size build, run and save a CompositeDrunk of log-spaced-kappa_max drunks."""
+    """Load config, and for each composite size build, run and save a CompositeDrunk of power-log spaced kappa_max drunks."""
     args = _parse_args()
     config = load_config(args.config)
 

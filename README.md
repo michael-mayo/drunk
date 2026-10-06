@@ -7,8 +7,9 @@ every step, staggers a fixed distance in a random direction that is biased back 
 deposits a randomly oriented 2D Gaussian at its new location. A `CompositeDrunk` groups several
 already-constructed drunks, runs them in parallel worker processes, and renders the sum of all their
 deposits. The program builds three composites, of 5, 10 and 20 drunks. Within each, the drunks are
-identical except for a random seed and a homeward bias `kappa_max` spaced logarithmically over the
-same range, 0.01 to 0.4. For each composite it prints a summary and saves a heatmap of the combined
+identical except for a random seed and a homeward bias `kappa_max` spread over the same range,
+0.01 to 0.4, with power-log spacing that puts most drunks at the weakly biased end (see
+[`kappa_max` spacing](#kappa_max-spacing)). For each composite it prints a summary and saves a heatmap of the combined
 deposits, normalised to [0, 1], as a PNG.
 
 ### Sample output
@@ -48,6 +49,29 @@ For example, with `kappa_max = 2`, `r0 = 10`:
 | (10, 10) | 14.1 | 1.51 | 87% | 59% |
 
 Setting `kappa_max: 0` recovers a plain uniform random walk.
+
+### `kappa_max` spacing
+
+Member `i` of `n` (with `t = i / (n − 1)` running from 0 to 1) gets
+
+```
+kappa_max = kappa_max_start · (kappa_max_end / kappa_max_start) ^ (t ^ p)
+```
+
+where `p` is `composite.kappa_max_power`. With `p = 1` this is ordinary logarithmic spacing
+(`np.geomspace`). `p > 1` crowds more members towards `kappa_max_start`, and `p < 1` towards
+`kappa_max_end`. Both ends are always included. For 20 drunks between 0.01 and 0.4:
+
+| Spacing | Median `kappa_max` | Drunks < 0.02 | Drunks < 0.05 | Drunks < 0.1 |
+|---|---|---|---|---|
+| Linear (for comparison) | 0.205 | 1 | 2 | 5 |
+| Logarithmic (`p = 1`) | 0.064 | 4 | 9 | 12 |
+| Power-log, `p = 2` | 0.025 | 9 | 13 | 16 |
+| **Power-log, `p = 3` (current)** | **0.016** | **11** | **15** | **17** |
+
+So most drunks are only weakly biased and wander widely, while a few strongly biased ones form the
+core. At `p = 3` the first several members are already almost identical (≈ 0.0100), differing
+mainly in their seeds; going higher mostly adds more near-duplicates.
 
 ### Gaussian deposits
 
@@ -129,16 +153,16 @@ python app/main.py      # or equivalently: python -m app.main
 Example console output (abridged):
 
 ```
-CompositeDrunk(n=5, steps=1000, centroid=(11.11, 2.27), centroid_distance=11.34)
-  Drunk(seed=383329928, step_size=1.0, kappa_max=0.01, r0=10.0, variance=1.0, decay=0.999, steps=1000, location=(25.45, 7.65), distance=26.58, last_amplitude=0.368)
-  Drunk(seed=3324115917, step_size=1.0, kappa_max=0.02515, ...)
+CompositeDrunk(n=5, steps=1000, centroid=(-25.70, 9.19), centroid_distance=27.30)
+  Drunk(seed=2170349635, step_size=1.0, kappa_max=0.01, r0=10.0, variance=1.0, decay=0.999, steps=1000, location=(-25.14, -4.60), distance=25.56, last_amplitude=0.368)
+  Drunk(seed=2801604000, step_size=1.0, kappa_max=0.01059, ...)
   ...
-  Drunk(seed=1859786276, step_size=1.0, kappa_max=0.4, ...)
+  Drunk(seed=2478851583, step_size=1.0, kappa_max=0.4, ...)
 Saved /home/michael/drunk/output/composite_5_drunks.png
-CompositeDrunk(n=10, steps=1000, centroid=(-6.58, 2.43), centroid_distance=7.01)
+CompositeDrunk(n=10, steps=1000, centroid=(-9.16, -6.27), centroid_distance=11.10)
   ...
 Saved /home/michael/drunk/output/composite_10_drunks.png
-CompositeDrunk(n=20, steps=1000, centroid=(2.31, 0.69), centroid_distance=2.41)
+CompositeDrunk(n=20, steps=1000, centroid=(-8.55, -1.43), centroid_distance=8.67)
   ...
 Saved /home/michael/drunk/output/composite_20_drunks.png
 ```
@@ -155,10 +179,11 @@ folder containing `config.yaml`.
 
 | Setting | Type | Current value | Description |
 |---|---|---|---|
-| `seed` | int | `42` | Master seed for the RNG that generates every member drunk's seed |
+| `seed` | int | `43` | Master seed for the RNG that generates every member drunk's seed |
 | `composite.sizes` | list of int | `[5, 10, 20]` | One composite is built per entry, with that many member drunks |
 | `composite.kappa_max_start` | float | `0.01` | `kappa_max` of the first member |
-| `composite.kappa_max_end` | float | `0.4` | `kappa_max` of the last member; members in between are spaced logarithmically (`np.geomspace`). The same range is used for every composite size |
+| `composite.kappa_max_end` | float | `0.4` | `kappa_max` of the last member. The same range is used for every composite size; both ends must be > 0 |
+| `composite.kappa_max_power` | float | `3.0` | Exponent `p` of the power-log spacing between the ends: `1` = logarithmic, `> 1` = more members near `kappa_max_start` |
 | `parallel.max_workers` | int or `null` | `null` | Maximum worker processes per composite (`null` = one per CPU, capped at the number of members) |
 | `walk.num_steps` | int | `1000` | Number of steps each member drunk takes |
 | `walk.step_size` | float | `1.0` | Distance moved on each step |
@@ -177,9 +202,9 @@ folder containing `config.yaml`.
 
 Seeds a master RNG from `config.yaml`. For each size `n` in `composite.sizes` it draws `n` member
 seeds from that RNG and creates one `Drunk` per seed, identical except for `kappa_max`, which is
-spaced logarithmically from `composite.kappa_max_start` to `composite.kappa_max_end`. The range is
-the same for every size, and only the spacing gets finer: with 5 drunks the values are 0.01,
-0.025, 0.063, 0.159 and 0.4, each about 2.51× the last. It wraps the drunks in a `CompositeDrunk`,
+spread from `composite.kappa_max_start` to `composite.kappa_max_end` with power-log spacing
+(exponent `composite.kappa_max_power`). The range is the same for every size, and only the spacing
+gets finer: with 5 drunks and `p = 3` the values are 0.01, 0.0106, 0.0159, 0.0474 and 0.4. It wraps the drunks in a `CompositeDrunk`,
 runs it for `walk.num_steps` steps (members in parallel), prints its summary, and saves a heatmap
 of the combined deposits to `<output_dir>/composite_<n>_drunks.png`.
 

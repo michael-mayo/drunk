@@ -9,10 +9,15 @@ composite:
   # main.py builds one CompositeDrunk per entry, each with that many member drunks.
   sizes: [5, 10, 20]
   # Members are identical except for their random seed and kappa_max (see the
-  # walk section), which is spaced logarithmically from kappa_max_start to
-  # kappa_max_end across the members.
+  # walk section). kappa_max uses power-log spacing from kappa_max_start to
+  # kappa_max_end: member i of n gets
+  #   kappa_max_start * (kappa_max_end / kappa_max_start) ** (t ** kappa_max_power),
+  # with t = i / (n - 1). Both ends must be > 0.
   kappa_max_start: 0.01
   kappa_max_end: 0.4
+  # 1 = logarithmic spacing; > 1 puts more members near kappa_max_start
+  # (3: median ~0.016 for 20 drunks); < 1 puts more near kappa_max_end.
+  kappa_max_power: 4.0
 
 parallel:
   # Maximum worker processes used to run a composite's member drunks in
