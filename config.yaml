@@ -2,21 +2,34 @@
 # All key parameters and settings are read from this file via app/config.py.
 # Relative paths are resolved against the directory containing this file.
 
-# Master seed for the RNG in main.py that generates each drunk's own seed.
-seed: 42
+# main.py builds one map per seed; each seed drives the RNG that generates
+# that map's drunk seeds and homes.
+seeds: [41, 42, 43]
+
+layers:
+  # main.py builds one height map from a CompositeDrunk at each scale. A layer
+  # at scale s multiplies walk.step_size and walk.r0 by s and
+  # deposit.variance by s^2, making it an s-times enlargement of the same mix
+  # of drunks. Layers are scaled to unit standard deviation, weighted by
+  # (s / smallest scale)^h, summed, and scaled linearly to [0, 1].
+  scales: [0.5, 1.0, 2.0, 4.0]
+  # Weighting exponent: relief grows with distance roughly as lag^h. 0.5 was
+  # closest to real terrain in util/terrain_experiment_phase6.yaml.
+  h: 0.5
 
 composite:
-  # main.py builds one CompositeDrunk per entry, each with that many member drunks.
-  sizes: [5, 10, 20]
-  # Members are identical except for their random seed and kappa_max (see the
-  # walk section). kappa_max uses power-log spacing from kappa_max_start to
+  # Drunks in each layer's CompositeDrunk.
+  drunks: 200
+  # Within a layer, drunks are identical except for their random seed, home and
+  # kappa_max (see the walk section). kappa_max uses power-log spacing from kappa_max_start to
   # kappa_max_end: member i of n gets
   #   kappa_max_start * (kappa_max_end / kappa_max_start) ** (t ** kappa_max_power),
   # with t = i / (n - 1). Both ends must be > 0.
   kappa_max_start: 0.01
   kappa_max_end: 0.4
   # 1 = logarithmic spacing; > 1 puts more members near kappa_max_start
-  # (3: median ~0.016 for 20 drunks); < 1 puts more near kappa_max_end.
+  # (4: median ~0.013 for 20 drunks); < 1 puts more near kappa_max_end.
+  # Every layer gets the same spacing (kappa_max has no units).
   kappa_max_power: 4.0
 
 parallel:
@@ -48,6 +61,13 @@ deposit:
   decay: 0.999
 
 plot:
+  # Side of the square map area, centred on the origin, in walk units. The map
+  # wraps around: deposits leaving one edge re-enter at the opposite one, so
+  # there are no edge effects and the map tiles seamlessly. Each layer's
+  # drunks start at Poisson-disk sampled points (no two closer than a minimum
+  # spacing, chosen automatically from the number of drunks, measured across
+  # the edges) in this square, and are biased back towards their start point.
+  domain: 96.0
   # Resolution (points per side) of the grid used to render the summed deposits.
   grid_points: 400
   # Each Gaussian is only evaluated where it exceeds cutoff x its peak, i.e.

@@ -66,7 +66,7 @@ class CompositeDrunk:
 
     @property
     def positions(self) -> list[tuple[float, float]]:
-        """Centroid of the members' positions after each step, starting at (0, 0)."""
+        """Centroid of the members' positions after each step, starting at the centroid of their homes."""
         centroid = np.mean([np.array(d.positions) for d in self.drunks], axis=0)
         return [tuple(p) for p in centroid]
 

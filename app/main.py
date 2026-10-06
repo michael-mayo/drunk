@@ -1,9 +1,13 @@
-"""Entry point: simulate CompositeDrunks of several sizes and save an image of each one's combined deposits.
+"""Entry point: build multi-scale terrain height maps from layers of composite drunks.
 
-For each configured size, the composite's members are identical except for a
-random seed and a kappa_max with power-log spacing across the same configured
-range. A master RNG seeded from ``config.yaml`` generates all member seeds, so
-the whole run is reproducible from that single setting.
+Each layer is a CompositeDrunk at one of the configured scales (step size and
+r0 multiplied by the scale, deposit variance by its square). Within a layer
+the drunks are identical except for a random seed, a home (Poisson-disk
+sampled inside the map, and the point each drunk is biased back towards) and a
+kappa_max with power-log spacing; every layer gets the same spacing. The map
+wraps around at its edges. One map is built per seed in ``config.yaml``; that
+seed drives the RNG that generates the map's drunk seeds and homes, so each
+map is reproducible from its seed.
 """
 
 import argparse
@@ -22,11 +26,14 @@ from app.config import Config
 from app.config import load_config
 from app.composite_drunk import CompositeDrunk
 from app.drunk import Drunk
+from app.layered_drunk import LayeredDrunk
+from app.sampling import poisson_disk_points
+from app.sampling import power_log_spacing
 
 
 def _parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Simulate composite drunks' random walks and save their deposit heatmaps as PNGs.")
+    parser = argparse.ArgumentParser(description="Build a multi-scale terrain height map from layers of composite drunks and save it as a PNG.")
     parser.add_argument(
         "--config",
         type=Path,
@@ -36,56 +43,57 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _power_log_spacing(start: float, end: float, n: int, power: float) -> np.ndarray:
-    """Return ``n`` values from ``start`` to ``end`` spaced as ``start * (end / start) ** (t ** power)``.
+def _build_layer(config: Config, scale: float, rng: np.random.Generator) -> CompositeDrunk:
+    """Create one layer's composite at ``scale``.
 
-    ``t`` runs evenly from 0 to 1. ``power = 1`` is logarithmic spacing
-    (``np.geomspace``); ``power > 1`` crowds more values towards ``start``,
-    ``power < 1`` towards ``end``. Both ends must be positive.
+    Its drunks are identical except for a seed and home drawn from ``rng`` and
+    a power-log spaced kappa_max; step size and r0 are multiplied by ``scale``
+    and deposit variance by ``scale**2``.
     """
-    if start <= 0 or end <= 0:
-        raise ValueError(f"power-log spacing needs positive ends, got {start} and {end}")
-    if power <= 0:
-        raise ValueError(f"power-log spacing needs a positive power, got {power}")
-    t = np.linspace(0.0, 1.0, n)
-    return start * (end / start) ** (t**power)
-
-
-def _build_drunks(config: Config, n: int, rng: np.random.Generator) -> list[Drunk]:
-    """Create ``n`` drunks, identical except for a seed drawn from ``rng`` and a power-log spaced kappa_max."""
+    n = config.composite.drunks
     seeds = [int(s) for s in rng.integers(0, 2**32, size=n)]
-    kappa_maxes = _power_log_spacing(
+    homes = poisson_disk_points(n, config.plot.domain, rng, periodic=True)
+    kappa_maxes = power_log_spacing(
         config.composite.kappa_max_start,
         config.composite.kappa_max_end,
         n,
         config.composite.kappa_max_power,
     )
-    return [
+    drunks = [
         Drunk(
             seed,
-            step_size=config.walk.step_size,
+            step_size=config.walk.step_size * scale,
             kappa_max=float(kappa_max),
-            r0=config.walk.r0,
-            variance=config.deposit.variance,
+            r0=config.walk.r0 * scale,
+            variance=config.deposit.variance * scale**2,
             decay=config.deposit.decay,
             initial_amplitude=config.deposit.initial_amplitude,
+            home=(float(home[0]), float(home[1])),
         )
-        for seed, kappa_max in zip(seeds, kappa_maxes)
+        for seed, kappa_max, home in zip(seeds, kappa_maxes, homes)
     ]
+    return CompositeDrunk(drunks, max_workers=config.parallel.max_workers)
 
 
 def main() -> None:
-    """Load config, and for each composite size build, run and save a CompositeDrunk of power-log spaced kappa_max drunks."""
+    """Load config and, for each seed, build a LayeredDrunk with one composite per scale, run it, and save its height map."""
     args = _parse_args()
     config = load_config(args.config)
 
-    rng = np.random.default_rng(config.seed)
-    for size in config.composite.sizes:
-        composite = CompositeDrunk(_build_drunks(config, size, rng), max_workers=config.parallel.max_workers)
-        composite.steps(config.walk.num_steps)
-        print(composite)
-        filename = config.paths.output_dir / f"composite_{size}_drunks.png"
-        composite.to_png(filename, grid_points=config.plot.grid_points, cutoff=config.plot.cutoff)
+    for seed in config.seeds:
+        rng = np.random.default_rng(seed)
+        layers = [_build_layer(config, scale, rng) for scale in config.layers.scales]
+        terrain = LayeredDrunk(layers, config.layers.scales, config.layers.h, max_workers=config.parallel.max_workers)
+        terrain.steps(config.walk.num_steps)
+        print(f"seed {seed}: {terrain}")
+        filename = config.paths.output_dir / f"terrain_seed{seed}.png"
+        terrain.to_png(
+            filename,
+            config.plot.domain,
+            grid_points=config.plot.grid_points,
+            cutoff=config.plot.cutoff,
+            label=f"seed {seed}",
+        )
         print(f"Saved {filename}")
 
 

@@ -16,10 +16,18 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
 
 @dataclass(frozen=True)
-class CompositeConfig:
-    """The composite drunks built by main.py: member counts and kappa_max range."""
+class LayersConfig:
+    """Scales of the layers in main.py's height map, and their weighting exponent."""
 
-    sizes: tuple[int, ...]
+    scales: tuple[float, ...]
+    h: float
+
+
+@dataclass(frozen=True)
+class CompositeConfig:
+    """Each layer's composite: number of drunks and kappa_max spacing."""
+
+    drunks: int
     kappa_max_start: float
     kappa_max_end: float
     kappa_max_power: float
@@ -54,6 +62,7 @@ class DepositConfig:
 class PlotConfig:
     """Settings for rendering images."""
 
+    domain: float
     grid_points: int
     cutoff: float
 
@@ -70,7 +79,8 @@ class PathsConfig:
 class Config:
     """Top-level project configuration."""
 
-    seed: int
+    seeds: tuple[int, ...]
+    layers: LayersConfig
     composite: CompositeConfig
     parallel: ParallelConfig
     walk: WalkConfig
@@ -104,9 +114,14 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
 
     base_dir = config_path.parent
+    layers_raw = _require(raw, "layers", "")
+    layers = LayersConfig(
+        scales=tuple(float(s) for s in _require(layers_raw, "scales", "layers")),
+        h=float(_require(layers_raw, "h", "layers")),
+    )
     composite_raw = _require(raw, "composite", "")
     composite = CompositeConfig(
-        sizes=tuple(int(n) for n in _require(composite_raw, "sizes", "composite")),
+        drunks=int(_require(composite_raw, "drunks", "composite")),
         kappa_max_start=float(_require(composite_raw, "kappa_max_start", "composite")),
         kappa_max_end=float(_require(composite_raw, "kappa_max_end", "composite")),
         kappa_max_power=float(_require(composite_raw, "kappa_max_power", "composite")),
@@ -128,6 +143,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     )
     plot_raw = _require(raw, "plot", "")
     plot = PlotConfig(
+        domain=float(_require(plot_raw, "domain", "plot")),
         grid_points=int(_require(plot_raw, "grid_points", "plot")),
         cutoff=float(_require(plot_raw, "cutoff", "plot")),
     )
@@ -137,7 +153,8 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         output_dir=_resolve(base_dir, _require(paths_raw, "output_dir", "paths")),
     )
     return Config(
-        seed=int(_require(raw, "seed", "")),
+        seeds=tuple(int(x) for x in _require(raw, "seeds", "")),
+        layers=layers,
         composite=composite,
         parallel=parallel,
         walk=walk,

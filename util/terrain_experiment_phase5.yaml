@@ -1,0 +1,81 @@
+# Terrain-statistics experiment: generate composite-drunk height maps under
+# several configurations and compare their statistics with real terrain.
+# Run with: python util/terrain_experiment.py [--config util/terrain_experiment.yaml]
+
+# Prefix for the output files in output/experiments/.
+name: phase5_octaves
+
+# Master seed; sample i of every configuration uses seed + i, so all
+# configurations see the same random draws where their parameters allow.
+seed: 1000
+# Maps generated per configuration.
+samples: 10
+
+reference:
+  # Folder of Copernicus GLO-30 tiles (Copernicus_DSM_COG_10_*_DEM.tif), relative
+  # to the project root. git-ignored; see README for the download command.
+  dem_dir: data/dem
+  # Side of each reference crop in metres (a Cities: Skylines II playable map).
+  side_m: 14336.0
+  # Crops cut per tile.
+  crops_per_tile: 8
+
+map:
+  # Side of the square model domain, in walk units, centred on the origin.
+  domain: 96.0
+  # Grid points per side (reference crops are resampled to the same size).
+  grid_points: 384
+  # Gaussian truncation, as in config.yaml plot.cutoff.
+  cutoff: 0.000244140625
+
+# Baseline configuration (matches config.yaml); each entry under `configs`
+# overrides some of these. Keys:
+#   n                  drunks per map
+#   steps              steps per drunk
+#   r0                 homeward-bias length scale
+#   kappa_start/end    kappa_max range; kappa_power: power-log exponent
+#   region             side of the Poisson-disk start square
+#   decay              geometric amplitude decay per deposit
+#   variance           deposit major-axis variance for the most confined drunk
+#   amp_h              null, or H for amplitude scaling: each drunk's amplitude
+#                      is (s / s_min) ** (2 + amp_h), s = its expected spread
+#   var_q              deposit variance scaling: variance * (s / s_min) ** (2 * var_q)
+#   homes              start sampler: poisson (Poisson-disk), levy (Lévy flight),
+#                      or mixed (Poisson-disk plus a levy_fraction of Lévy points)
+#   levy_alpha         Lévy step-length exponent (smaller = longer jumps)
+#   levy_min_step      shortest Lévy step
+#   levy_fraction      share of homes from the Lévy flight when homes is mixed
+#   step_size          step length of the finest layer
+#   octaves            number of layers; layer j is scaled up by 2^j
+#   octave_h           layer weighting exponent: layer j weighted 2^(j * octave_h)
+baseline:
+  n: 20
+  steps: 1000
+  r0: 10.0
+  kappa_start: 0.01
+  kappa_end: 0.4
+  kappa_power: 4.0
+  region: 40.0
+  decay: 0.999
+  variance: 1.0
+  amp_h: null
+  var_q: 0.0
+  homes: poisson
+  levy_alpha: 1.5
+  levy_min_step: 2.0
+  levy_fraction: 0.5
+  step_size: 1.0
+  octaves: 1
+  octave_h: 0.7
+
+# Phase 5: every single-scale configuration trades large-scale relief (H)
+# against even coverage (HI, skew). These stack dense composites at several
+# scales (octaves), each normalised and weighted by 2^(j * octave_h).
+configs:
+  oct3_h0.5: {n: 200, region: 128.0, octaves: 3, octave_h: 0.5}
+  oct3_h0.7: {n: 200, region: 128.0, octaves: 3, octave_h: 0.7}
+  oct4_h0.5: {n: 200, region: 128.0, octaves: 4, octave_h: 0.5}
+  oct4_h0.7: {n: 200, region: 128.0, octaves: 4, octave_h: 0.7}
+  oct4_h0.9: {n: 200, region: 128.0, octaves: 4, octave_h: 0.9}
+  oct4_h0.7_n100: {n: 100, region: 128.0, octaves: 4, octave_h: 0.7}
+  oct4_h0.7_levy: {n: 200, region: 128.0, octaves: 4, octave_h: 0.7, homes: levy, levy_min_step: 8.0}

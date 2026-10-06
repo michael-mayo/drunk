@@ -36,3 +36,6 @@ tmp/
 
 # Generated outputs
 output/
+
+# Downloaded reference elevation tiles (large; see README)
+data/
