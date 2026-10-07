@@ -1,10 +1,17 @@
 """Web UI: enter a seed, generate a layered-drunk terrain map, and view it in the browser.
 
 Serves a single page at ``http://<ui.host>:<ui.port>/`` (``localhost:9000`` by
-default) with a seed field, a Generate button, a progress bar and the map,
-drawn exactly as ``main`` draws it. Generation runs in a background thread
-through ``app.pipeline.generate_terrain``; the page polls for progress and
-shows the PNG when it is ready. One map is generated at a time.
+default) with a seed field, a Generate button, a progress bar, a peak-height
+slider and the map, drawn as ``main`` draws it. Generation runs in a
+background thread through ``app.pipeline.generate_terrain``; the page polls
+for progress and shows the PNG when it is ready. One map is generated at a
+time.
+
+Heights stay normalised (0-1) throughout; the slider only sets how they are
+labelled in Cities: Skylines II metres: 0.0 is 0 m and 1.0 is the slider's
+peak height (default ``ui.peak_height_m``, at most ``cs2.max_height_m``), so
+sea level scales with it. Moving the slider redraws the map's numbers (colour
+bar, sea level, title); the picture itself doesn't change.
 
 Uses only the Python standard library's HTTP server, so it needs no extra
 dependencies. Endpoints:
@@ -12,8 +19,11 @@ dependencies. Endpoints:
 - ``GET /``: the page.
 - ``POST /api/generate`` with JSON ``{"seed": <int>}``: start a job; returns
   ``{"job": <id>}`` (409 if a job is already running).
-- ``GET /api/progress/<id>``: ``{"fraction", "message", "done", "error"}``.
-- ``GET /api/image/<id>``: the finished map as PNG.
+- ``GET /api/progress/<id>``: ``{"fraction", "message", "done", "error",
+  "info"}``; ``info`` (when done) gives the normalised sea level and highest
+  point, the sea fraction and river counts.
+- ``GET /api/image/<id>?peak=<m>``: the finished map as PNG, labelled with
+  1.0 = ``<m>`` metres (default ``ui.peak_height_m``).
 """
 
 import argparse
@@ -26,12 +36,15 @@ import sys
 import threading
 import traceback
 import webbrowser
+from collections import OrderedDict
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
+from urllib.parse import urlparse
 
 # When run as a script (python app/ui.py) rather than a module (python -m app.ui),
 # put the project root on sys.path so the `app` package can be imported.
@@ -41,8 +54,14 @@ if not __package__:
 from app.config import DEFAULT_CONFIG_PATH
 from app.config import Config
 from app.config import load_config
+from app.pipeline import TerrainResult
 from app.pipeline import generate_terrain
 from app.rendering import save_terrain_map
+
+# matplotlib's pyplot isn't thread-safe; the server handles requests on several threads.
+RENDER_LOCK = threading.Lock()
+# Rendered images kept per finished job (one per slider value recently viewed).
+IMAGE_CACHE_SIZE = 8
 
 # The single page: seed field, Generate button, progress bar, status line and map.
 PAGE = """<!doctype html>
@@ -72,6 +91,10 @@ PAGE = """<!doctype html>
   #map { display: block; width: 100%; height: auto; margin-top: 16px; border: 1px solid var(--border);
          border-radius: 6px; background: var(--panel); }
   #map[hidden] { display: none; }
+  .scale { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+  .scale input[type=range] { flex: 1; min-width: 180px; width: auto; padding: 0; accent-color: var(--accent); }
+  #peakValue { min-width: 72px; font-variant-numeric: tabular-nums; }
+  .hint { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -82,6 +105,12 @@ PAGE = """<!doctype html>
     <input id="seed" type="number" step="1" value="42" required>
     <button id="go" type="submit">Generate</button>
   </form>
+  <div class="scale">
+    <label for="peak">Peak height</label>
+    <input id="peak" type="range" min="__PEAK_MIN__" max="__PEAK_MAX__" step="__PEAK_STEP__" value="__PEAK_DEFAULT__">
+    <span id="peakValue"></span>
+  </div>
+  <div class="hint">Height 1.0 is shown as this many metres (0.0 is 0 m); Cities: Skylines II's full range is __PEAK_MAX__ m.</div>
   <progress id="bar" max="1" value="0"></progress>
   <div id="status">Enter a seed and press Generate.</div>
   <img id="map" alt="Generated terrain map" hidden>
@@ -90,12 +119,34 @@ PAGE = """<!doctype html>
 const form = document.getElementById("form"), seedInput = document.getElementById("seed");
 const go = document.getElementById("go"), bar = document.getElementById("bar");
 const statusLine = document.getElementById("status"), map = document.getElementById("map");
+const peak = document.getElementById("peak"), peakValue = document.getElementById("peakValue");
+let currentJob = null, currentInfo = null, redrawTimer = null;
+
+const metres = (v) => Math.round(v).toLocaleString() + " m";
+function showPeak() { peakValue.textContent = metres(Number(peak.value)); }
+function summary() {
+  if (!currentInfo) return;
+  const p = Number(peak.value), i = currentInfo;
+  let text = `Seed ${i.seed}: sea level ${metres(i.sea_level * p)}, highest point ${metres(i.max_height * p)}, `
+           + `${Math.round(i.sea_fraction * 100)}% sea`;
+  if (i.rivers !== null) text += `, ${i.rivers} rivers (${i.rivers_to_sea} reach the sea)`;
+  statusLine.textContent = text;
+}
+function showMap() { map.src = `/api/image/${currentJob}?peak=${peak.value}`; map.hidden = false; }
+showPeak();
+peak.addEventListener("input", () => {
+  showPeak(); summary();
+  if (currentJob === null || !currentInfo) return;
+  // Redraw the labels once the slider settles.
+  clearTimeout(redrawTimer);
+  redrawTimer = setTimeout(showMap, 250);
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const seed = parseInt(seedInput.value, 10);
   if (Number.isNaN(seed)) { statusLine.textContent = "The seed must be a whole number."; return; }
-  go.disabled = true; bar.value = 0; statusLine.textContent = "Starting…";
+  go.disabled = true; bar.value = 0; statusLine.textContent = "Starting…"; currentInfo = null;
   try {
     const response = await fetch("/api/generate", {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({seed}),
@@ -116,8 +167,9 @@ async function poll(job, seed) {
     statusLine.textContent = state.message;
     if (state.error) { statusLine.textContent = "Failed: " + state.error; go.disabled = false; return; }
     if (state.done) {
-      map.src = `/api/image/${job}`; map.hidden = false;
+      currentJob = job; currentInfo = state.info;
       map.alt = `Generated terrain map for seed ${seed}`;
+      showMap(); summary();
       go.disabled = false; return;
     }
   } catch (error) {
@@ -140,7 +192,9 @@ class Job:
     message: str = "queued"
     done: bool = False
     error: str | None = None
-    png: bytes | None = None
+    result: TerrainResult | None = None
+    # Rendered PNGs keyed by peak height (m), most recently used last.
+    images: OrderedDict = dataclass_field(default_factory=OrderedDict)
     lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
 
     def update(self, fraction: float, message: str) -> None:
@@ -150,9 +204,44 @@ class Job:
             self.message = message
 
     def snapshot(self) -> dict[str, object]:
-        """A consistent copy of the job's state for the progress endpoint."""
+        """A consistent copy of the job's state for the progress endpoint (with map facts once done)."""
         with self.lock:
-            return {"fraction": self.fraction, "message": self.message, "done": self.done, "error": self.error}
+            info = None
+            if self.result is not None:
+                r = self.result
+                info = {
+                    "seed": self.seed,
+                    "sea_level": r.sea_level,
+                    "max_height": float(r.field.max()),
+                    "sea_fraction": r.sea_fraction,
+                    "rivers": r.rivers_carved if r.state == "rivers" else None,
+                    "rivers_to_sea": r.rivers_to_sea,
+                }
+            return {"fraction": self.fraction, "message": self.message, "done": self.done, "error": self.error,
+                    "info": info}
+
+    def image(self, peak_m: float) -> bytes:
+        """The finished map as PNG, labelled with normalised height 1.0 = ``peak_m`` metres (cached)."""
+        key = round(peak_m, 3)
+        with self.lock:
+            if key in self.images:
+                self.images.move_to_end(key)
+                return self.images[key]
+            r = self.result
+        if r is None:
+            raise ValueError("the map isn't finished")
+        title = (f"seed {self.seed}: sea level {r.sea_level * peak_m:,.0f} m, "
+                 f"highest point {float(r.field.max()) * peak_m:,.0f} m, {r.sea_fraction:.0%} sea")
+        buffer = io.BytesIO()
+        with RENDER_LOCK:
+            save_terrain_map(buffer, r.field, r.grid, r.grid, title, r.sea_level, rivers=r.river_area,
+                             height_scale_m=peak_m)
+        png = buffer.getvalue()
+        with self.lock:
+            self.images[key] = png
+            while len(self.images) > IMAGE_CACHE_SIZE:
+                self.images.popitem(last=False)
+        return png
 
 
 class JobManager:
@@ -164,6 +253,12 @@ class JobManager:
     def __init__(self, config: Config) -> None:
         """Manage jobs generated with ``config``."""
         self.config = config
+        self.page = (
+            PAGE.replace("__PEAK_MIN__", f"{config.ui.peak_height_min_m:g}")
+            .replace("__PEAK_MAX__", f"{config.cs2.max_height_m:g}")
+            .replace("__PEAK_STEP__", f"{config.ui.peak_height_step_m:g}")
+            .replace("__PEAK_DEFAULT__", f"{config.ui.peak_height_m:g}")
+        )
         self.jobs: dict[int, Job] = {}
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
@@ -188,15 +283,12 @@ class JobManager:
         try:
             result = generate_terrain(self.config, job.seed, progress=lambda f, m: job.update(0.97 * f, m))
             job.update(0.97, "drawing the map")
-            buffer = io.BytesIO()
-            save_terrain_map(buffer, result.field, result.grid, result.grid, result.title, result.sea_level,
-                             rivers=result.river_area)
-            summary = f"Seed {job.seed}: sea level {result.sea_level:.3f}"
-            if result.state == "rivers":
-                summary += f", {result.rivers_carved} rivers ({result.rivers_to_sea} reach the sea)"
             with job.lock:
-                job.png = buffer.getvalue()
-                job.fraction, job.message, job.done = 1.0, summary, True
+                job.result = result
+            # Draw at the default peak height now, so the first view is instant.
+            job.image(self.config.ui.peak_height_m)
+            with job.lock:
+                job.fraction, job.message, job.done = 1.0, "done", True
         except Exception as exc:  # report any failure to the page rather than killing the thread silently
             traceback.print_exc()
             with job.lock:
@@ -225,7 +317,7 @@ def make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
         def _job(self, prefix: str) -> Job | None:
             """The job named by the path after ``prefix``, or None (and a 404 sent)."""
             try:
-                job = manager.jobs.get(int(self.path[len(prefix):]))
+                job = manager.jobs.get(int(urlparse(self.path).path[len(prefix):]))
             except ValueError:
                 job = None
             if job is None:
@@ -235,7 +327,7 @@ def make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             """Serve the page, job progress, or a finished image."""
             if self.path in ("/", "/index.html"):
-                self._send(HTTPStatus.OK, PAGE.encode(), "text/html; charset=utf-8")
+                self._send(HTTPStatus.OK, manager.page.encode(), "text/html; charset=utf-8")
             elif self.path.startswith("/api/progress/"):
                 job = self._job("/api/progress/")
                 if job is not None:
@@ -243,10 +335,19 @@ def make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
             elif self.path.startswith("/api/image/"):
                 job = self._job("/api/image/")
                 if job is not None:
-                    if job.png is None:
+                    ui = manager.config.ui
+                    try:
+                        query = parse_qs(urlparse(self.path).query)
+                        peak_m = float(query.get("peak", [ui.peak_height_m])[0])
+                    except ValueError:
+                        self._json(HTTPStatus.BAD_REQUEST, {"error": "peak must be a number of metres"})
+                        return
+                    # Keep the label scale within the slider's range.
+                    peak_m = min(max(peak_m, ui.peak_height_min_m), manager.config.cs2.max_height_m)
+                    if job.result is None:
                         self._json(HTTPStatus.CONFLICT, {"error": "not finished"})
                     else:
-                        self._send(HTTPStatus.OK, job.png, "image/png")
+                        self._send(HTTPStatus.OK, job.image(peak_m), "image/png")
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 

@@ -93,12 +93,23 @@ class RiversConfig:
 
 
 @dataclass(frozen=True)
+class Cs2Config:
+    """Cities: Skylines II heightmap conventions."""
+
+    # Height (m) spanned by the full 16-bit range at the editor's default height scale.
+    max_height_m: float
+
+
+@dataclass(frozen=True)
 class UiConfig:
-    """Web UI server settings."""
+    """Web UI server settings, and the peak-height slider."""
 
     host: str
     port: int
     open_browser: bool
+    peak_height_m: float
+    peak_height_min_m: float
+    peak_height_step_m: float
 
 
 @dataclass(frozen=True)
@@ -123,6 +134,7 @@ class Config:
     sea: SeaConfig
     drainage: DrainageConfig
     rivers: RiversConfig
+    cs2: Cs2Config
     ui: UiConfig
     paths: PathsConfig
 
@@ -202,12 +214,19 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
             **{k: int(_require(rivers_raw, k, "rivers")) for k in int_keys},
         ),
     )
+    cs2_raw = _require(raw, "cs2", "")
+    cs2 = Cs2Config(max_height_m=float(_require(cs2_raw, "max_height_m", "cs2")))
     ui_raw = _require(raw, "ui", "")
     ui = UiConfig(
         host=str(_require(ui_raw, "host", "ui")),
         port=int(_require(ui_raw, "port", "ui")),
         open_browser=bool(_require(ui_raw, "open_browser", "ui")),
+        peak_height_m=float(_require(ui_raw, "peak_height_m", "ui")),
+        peak_height_min_m=float(_require(ui_raw, "peak_height_min_m", "ui")),
+        peak_height_step_m=float(_require(ui_raw, "peak_height_step_m", "ui")),
     )
+    if not 0 < ui.peak_height_min_m <= ui.peak_height_m <= cs2.max_height_m:
+        raise ValueError("config needs 0 < ui.peak_height_min_m <= ui.peak_height_m <= cs2.max_height_m")
     paths_raw = _require(raw, "paths", "")
     paths = PathsConfig(
         sample_images_dir=_resolve(base_dir, _require(paths_raw, "sample_images_dir", "paths")),
@@ -224,6 +243,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         sea=sea,
         drainage=drainage,
         rivers=rivers,
+        cs2=cs2,
         ui=ui,
         paths=paths,
     )

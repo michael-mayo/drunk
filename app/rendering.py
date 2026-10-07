@@ -10,6 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import ListedColormap
+from matplotlib.ticker import MaxNLocator
 
 
 def square_grid(points: np.ndarray, margin: float, grid_points: int) -> tuple[np.ndarray, np.ndarray]:
@@ -95,6 +96,7 @@ def save_terrain_map(
     title: str,
     sea_level: float,
     rivers: np.ndarray | None = None,
+    height_scale_m: float | None = None,
 ) -> None:
     """Save ``field`` as a terrain map: sea below ``sea_level`` in blues, land above in terrain colours.
 
@@ -105,13 +107,22 @@ def save_terrain_map(
     read as channels in the terrain rather than as sea. ``filename`` may also
     be an open binary file (e.g. ``io.BytesIO``), which receives the PNG.
     Parent folders of a path are created if needed.
+
+    With ``height_scale_m``, heights are labelled in metres (normalised
+    height x ``height_scale_m``): the colour bar gets round-metre ticks and
+    the sea-level marker shows its height in metres. Only the labels change;
+    the picture is identical for any scale.
     """
     if isinstance(filename, (str, Path)):
         filename = Path(filename)
         filename.parent.mkdir(parents=True, exist_ok=True)
     vmin, vmax = float(field.min()), float(field.max())
 
-    fig, ax = plt.subplots(figsize=(7, 6))
+    # Fixed axes positions (rather than tight_layout), so the map stays in exactly
+    # the same place whatever the labels: only the numbers change between scales.
+    fig = plt.figure(figsize=(7, 6))
+    ax = fig.add_axes((0.09, 0.08, 0.68, 0.84))
+    cax = fig.add_axes((0.80, 0.08, 0.03, 0.84))
     extent = (gx[0], gx[-1], gy[0], gy[-1])
     image = ax.imshow(
         field,
@@ -125,13 +136,24 @@ def save_terrain_map(
     ax.contour(field, levels=[sea_level], colors="navy", linewidths=0.5, origin="lower", extent=extent)
     if rivers is not None and np.any(rivers > 0):
         _draw_rivers(ax, rivers, gx, gy)
-    bar = fig.colorbar(image, ax=ax, label="normalised height")
+    if height_scale_m is None:
+        bar = fig.colorbar(image, cax=cax, label="normalised height")
+        sea_label = "sea level"
+    else:
+        bar = fig.colorbar(image, cax=cax, label="height (m)")
+        # Ticks at round metre values, placed in the field's normalised units.
+        ticks_m = MaxNLocator(nbins=7).tick_values(vmin * height_scale_m, vmax * height_scale_m)
+        ticks_m = ticks_m[(ticks_m >= vmin * height_scale_m - 1e-9) & (ticks_m <= vmax * height_scale_m + 1e-9)]
+        # Leave room for the sea-level label: drop ticks within 4% of the range of it.
+        ticks_m = ticks_m[np.abs(ticks_m / height_scale_m - sea_level) > 0.04 * (vmax - vmin)]
+        bar.set_ticks(ticks_m / height_scale_m)
+        bar.set_ticklabels([f"{t:,.0f}" for t in ticks_m])
+        sea_label = f"sea level\n{sea_level * height_scale_m:,.0f} m"
     bar.ax.axhline(sea_level, color="black", linewidth=1.0)
-    bar.ax.text(1.6, sea_level, "sea level", transform=bar.ax.get_yaxis_transform(), va="center", fontsize=8)
+    bar.ax.text(1.6, sea_level, sea_label, transform=bar.ax.get_yaxis_transform(), va="center", fontsize=8)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_title(title)
-    fig.tight_layout()
     fig.savefig(filename, dpi=100, format="png")
     plt.close(fig)
 

@@ -485,6 +485,9 @@ folder containing `config.yaml`.
 | `rivers.stall_steps` | int | `50` | Steps without progress towards the sea before switching to steepest descent |
 | `ui.host` / `ui.port` | str / int | `127.0.0.1` / `9000` | Address the web UI serves on |
 | `ui.open_browser` | bool | `true` | Open the page in the default browser when the UI starts (under WSL, the Windows browser) |
+| `ui.peak_height_m` | float | `1000.0` | Default peak-height slider value: normalised height 1.0 is labelled as this many metres |
+| `ui.peak_height_min_m` / `ui.peak_height_step_m` | float | `100.0` / `10.0` | Slider minimum and step, in metres |
+| `cs2.max_height_m` | float | `4096.0` | Height spanned by a CS2 16-bit heightmap (0–65535) at the editor's default height scale; the slider's maximum |
 | `paths.sample_images_dir` | path | `sample_images` | Folder of sample images shown in this README |
 | `paths.output_dir` | path | `output` | Folder where generated PNGs are written (git-ignored) |
 
@@ -521,9 +524,20 @@ python -m app.main                          # same, run as a module
 
 ### `app.ui`
 
-A minimal web UI: one page with a seed field, a **Generate** button, a progress bar and the map,
-drawn exactly as `app.main` draws it (the image is pixel-identical to `main`'s for the same seed).
-It is served by Python's standard-library HTTP server, so it needs no extra dependencies.
+A minimal web UI: one page with a seed field, a **Generate** button, a **peak-height slider**, a
+progress bar and the map, drawn as `app.main` draws it but with heights labelled in metres. It is
+served by Python's standard-library HTTP server, so it needs no extra dependencies.
+
+**Heights in metres.** The terrain and sea level stay normalised (0–1) throughout; the UI only
+*labels* them in Cities: Skylines II metres. CS2 heightmaps span 0–4096 m at the editor's default
+height scale (`cs2.max_height_m`), but a map needn't use the whole range: the slider sets the
+height of the highest normalised value, from `ui.peak_height_min_m` (100 m) to
+`cs2.max_height_m` (4096 m), defaulting to `ui.peak_height_m` (1000 m). Height 0.0 is 0 m and 1.0
+is the slider value, so sea level scales with it: at 1000 m a sea level of 0.280 reads 280 m, at
+2300 m it reads 644 m. Moving the slider updates the summary line immediately and redraws the
+map's numbers (colour-bar ticks in metres, sea-level marker, title) a moment after it settles. The
+picture itself doesn't change: the map sits in a fixed position in the figure, so it is
+pixel-identical for every slider value. Redrawn images are cached (cached ~15 ms, new ~0.4 s).
 
 ```bash
 python app/ui.py                          # serve at http://localhost:9000 and open it in a browser
@@ -536,7 +550,8 @@ python app/ui.py --config my_config.yaml  # use an alternative config file
 
 Pressing **Generate** starts a background job that runs `app.pipeline.generate_terrain` for the
 seed; the page polls its progress (building layers → walking each layer → evaluating each batch of
-deposits → sea level → rivers → drawing) and shows the map when it's done, with a one-line summary.
+deposits → sea level → rivers → drawing) and shows the map when it's done, with a one-line summary
+in metres (sea level, highest point, sea fraction, rivers).
 One map is generated at a time: a second request while one is running is refused with a message.
 The seed must be a non-negative whole number. Endpoints:
 
@@ -544,8 +559,8 @@ The seed must be a non-negative whole number. Endpoints:
 |---|---|
 | `GET /` | The page |
 | `POST /api/generate` with `{"seed": <int>}` | Start a job; returns `{"job": <id>}` (409 if one is running, 400 for a bad seed) |
-| `GET /api/progress/<id>` | `{"fraction", "message", "done", "error"}` |
-| `GET /api/image/<id>` | The finished map as PNG |
+| `GET /api/progress/<id>` | `{"fraction", "message", "done", "error", "info"}`; when done, `info` gives the normalised sea level and highest point, sea fraction and river counts |
+| `GET /api/image/<id>?peak=<m>` | The finished map as PNG, labelled with height 1.0 = `<m>` metres (default `ui.peak_height_m`, clamped to the slider range; 400 if not a number) |
 
 Under WSL, the page is opened in the Windows default browser (`explorer.exe`); WSL2 forwards
 `localhost`, so `http://localhost:9000` also works from any Windows browser.

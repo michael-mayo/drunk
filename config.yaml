@@ -120,12 +120,22 @@ rivers:
   # Steps without getting closer to the sea before switching to steepest descent.
   stall_steps: 50
 
+cs2:
+  # Cities: Skylines II heightmaps are 4096 x 4096, 16-bit greyscale: values
+  # 0-65535 span 0 to this height (m) at the editor's default height scale.
+  max_height_m: 4096.0
+
 ui:
   # Web UI (app/ui.py): served at http://<host>:<port>/.
   host: 127.0.0.1
   port: 9000
   # Open the page in the default web browser when the server starts.
   open_browser: true
+  # Peak-height slider: normalised height 1.0 is shown as this many metres
+  # (0.0 is 0 m; sea level scales with it). Ranges up to cs2.max_height_m.
+  peak_height_m: 1000.0
+  peak_height_min_m: 100.0
+  peak_height_step_m: 10.0
 
 paths:
   # Folder of sample input images.
