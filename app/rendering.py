@@ -1,6 +1,7 @@
 """Render summed Gaussian-deposit fields as heatmap PNGs."""
 
 from pathlib import Path
+from typing import BinaryIO
 
 import matplotlib
 
@@ -87,7 +88,7 @@ def _draw_rivers(ax: plt.Axes, area: np.ndarray, gx: np.ndarray, gy: np.ndarray)
 
 
 def save_terrain_map(
-    filename: Path | str,
+    filename: Path | str | BinaryIO,
     field: np.ndarray,
     gx: np.ndarray,
     gy: np.ndarray,
@@ -101,11 +102,13 @@ def save_terrain_map(
     the colour bar. If ``rivers`` is given (each river cell's catchment area,
     0 elsewhere), rivers are drawn as semi-transparent light-blue lines that
     widen and strengthen downstream with the log of catchment area, so they
-    read as channels in the terrain rather than as sea. Parent folders are
-    created if needed.
+    read as channels in the terrain rather than as sea. ``filename`` may also
+    be an open binary file (e.g. ``io.BytesIO``), which receives the PNG.
+    Parent folders of a path are created if needed.
     """
-    path = Path(filename)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(filename, (str, Path)):
+        filename = Path(filename)
+        filename.parent.mkdir(parents=True, exist_ok=True)
     vmin, vmax = float(field.min()), float(field.max())
 
     fig, ax = plt.subplots(figsize=(7, 6))
@@ -129,6 +132,6 @@ def save_terrain_map(
     ax.set_ylabel("y")
     ax.set_title(title)
     fig.tight_layout()
-    fig.savefig(path, dpi=100)
+    fig.savefig(filename, dpi=100, format="png")
     plt.close(fig)
 

@@ -82,12 +82,12 @@ drunk has one deposit per step.)
   ([Gaussian deposits](#gaussian-deposits)).
 
 **Containers don't build their members.** `CompositeDrunk` and `LayeredDrunk` receive
-already-created objects. `main.py` builds everything:
+already-created objects. `app/pipeline.py` (`generate_terrain`, used by both `main.py` and the web UI) builds everything:
 
 ```mermaid
 flowchart LR
     S["seed (from config.seeds)"] --> R[RNG]
-    R --> B["_build_layer(config, s, rng)<br/>for each scale s"]
+    R --> B["build_layer(config, s, rng)<br/>for each scale s"]
     B -->|"200 seeds, Poisson-disk homes,<br/>power-log kappa_max,<br/>step/r0/variance scaled by s"| D["200 Drunk objects"]
     D --> C["CompositeDrunk(drunks)<br/>one layer"]
     C -->|"4 layers, one per scale"| L["LayeredDrunk(layers, scales, h)"]
@@ -416,7 +416,13 @@ conda activate drunk
 python app/main.py      # or equivalently: python -m app.main
 ```
 
-Example console output (abridged):
+Or use the web UI (see [`app.ui`](#appui)):
+
+```bash
+python app/ui.py        # or python -m app.ui; prints the URL, then open http://localhost:9000
+```
+
+Example console output of `app/main.py` (abridged). It renders the seeds in `config.yaml` and exits; it does not start the web UI:
 
 ```
 seed 41: LayeredDrunk(layers=4, scales=[0.5, 1.0, 2.0, 4.0], h=0.5, steps=1000)
@@ -431,6 +437,8 @@ seed 42: ...
 Saved /home/michael/drunk/output/terrain_seed42.png
 seed 43: ...
 Saved /home/michael/drunk/output/terrain_seed43.png
+
+Done. For the interactive web UI, run `python -m app.ui` and visit http://localhost:9000/
 ```
 
 Maps are written to the configured output folder (default `output/`) as `terrain_seed<seed>.png`.
@@ -475,6 +483,8 @@ folder containing `config.yaml`.
 | `rivers.valley_width` | float | `0.03` | Valley half-width (Gaussian sigma, cells) = `valley_width × √(catchment cells)` |
 | `rivers.min_valley_sigma` | float | `1.0` | Narrowest valley sigma, in cells |
 | `rivers.stall_steps` | int | `50` | Steps without progress towards the sea before switching to steepest descent |
+| `ui.host` / `ui.port` | str / int | `127.0.0.1` / `9000` | Address the web UI serves on |
+| `ui.open_browser` | bool | `true` | Open the page in the default browser when the UI starts (under WSL, the Windows browser) |
 | `paths.sample_images_dir` | path | `sample_images` | Folder of sample images shown in this README |
 | `paths.output_dir` | path | `output` | Folder where generated PNGs are written (git-ignored) |
 
@@ -508,6 +518,37 @@ python app/main.py                          # use config.yaml at the project roo
 python app/main.py --config my_config.yaml  # use an alternative config file
 python -m app.main                          # same, run as a module
 ```
+
+### `app.ui`
+
+A minimal web UI: one page with a seed field, a **Generate** button, a progress bar and the map,
+drawn exactly as `app.main` draws it (the image is pixel-identical to `main`'s for the same seed).
+It is served by Python's standard-library HTTP server, so it needs no extra dependencies.
+
+```bash
+python app/ui.py                          # serve at http://localhost:9000 and open it in a browser
+python app/ui.py --config my_config.yaml  # use an alternative config file
+```
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `--config` | path | optional | `config.yaml` (project root) | YAML config file to load; `ui.host`, `ui.port` and `ui.open_browser` set the server |
+
+Pressing **Generate** starts a background job that runs `app.pipeline.generate_terrain` for the
+seed; the page polls its progress (building layers → walking each layer → evaluating each batch of
+deposits → sea level → rivers → drawing) and shows the map when it's done, with a one-line summary.
+One map is generated at a time: a second request while one is running is refused with a message.
+The seed must be a non-negative whole number. Endpoints:
+
+| Method and path | Description |
+|---|---|
+| `GET /` | The page |
+| `POST /api/generate` with `{"seed": <int>}` | Start a job; returns `{"job": <id>}` (409 if one is running, 400 for a bad seed) |
+| `GET /api/progress/<id>` | `{"fraction", "message", "done", "error"}` |
+| `GET /api/image/<id>` | The finished map as PNG |
+
+Under WSL, the page is opened in the Windows default browser (`explorer.exe`); WSL2 forwards
+`localhost`, so `http://localhost:9000` also works from any Windows browser.
 
 ### `util/river_experiment.py`
 
@@ -626,6 +667,14 @@ classDiagram
         class main {
             +main() None
         }
+        class ui {
+            +JobManager
+            +main() None
+        }
+        class pipeline {
+            +build_layer(config, scale, rng) CompositeDrunk
+            +generate_terrain(config, seed, progress) TerrainResult
+        }
         class Drunk {
             +seed int
             +step_size float
@@ -703,15 +752,18 @@ classDiagram
     class ProcessPool["ProcessPoolExecutor workers"]
     class PNG["output/terrain_seedN.png"]
     main --> load_config : calls
+    main --> pipeline : generate_terrain per seed
+    ui --> pipeline : generate_terrain per request
+    ui ..> rendering : PNG for the page
     load_config ..> config_yaml : reads
     load_config ..> Config : creates
-    main ..> Drunk : creates drunks per layer
-    main ..> sampling : draws homes and kappa_max
-    main ..> CompositeDrunk : one per layer
-    main ..> LayeredDrunk : combines layers & runs
-    main ..> sea : sets sea level
-    main ..> rivers : carves rivers
-    main ..> drainage : fills hollows (rivers off)
+    pipeline ..> Drunk : creates drunks per layer
+    pipeline ..> sampling : draws homes and kappa_max
+    pipeline ..> CompositeDrunk : one per layer
+    pipeline ..> LayeredDrunk : combines layers & runs
+    pipeline ..> sea : sets sea level
+    pipeline ..> rivers : carves rivers
+    pipeline ..> drainage : fills hollows (rivers off)
     rivers ..> drainage : drains, routes flow
     rivers ..> sampling : draws sources
     main ..> rendering : saves terrain map
@@ -766,7 +818,9 @@ drunk/
 │   ├── sea.py             # Sea level from the fraction of the map that is water
 │   ├── drainage.py        # Hollow filling and D8 flow routing (numba)
 │   ├── rivers.py          # River drunks: walk the drainage, carve graded valleys (numba)
-│   └── main.py            # Entry point: builds the layers, runs them, saves the height map
+│   ├── pipeline.py        # The generation pipeline shared by main and ui, with progress reporting
+│   ├── main.py            # Entry point: generates the configured seeds and saves their maps
+│   └── ui.py              # Web UI at localhost:9000: seed field, Generate, progress bar, map
 ├── util/                  # Standalone tools
 │   ├── river_experiment.py          # Tunes river carving against real terrain
 │   ├── river_experiment*.yaml       # River experiment definitions (rounds 1-2)

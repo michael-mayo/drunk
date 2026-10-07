@@ -93,6 +93,15 @@ class RiversConfig:
 
 
 @dataclass(frozen=True)
+class UiConfig:
+    """Web UI server settings."""
+
+    host: str
+    port: int
+    open_browser: bool
+
+
+@dataclass(frozen=True)
 class PathsConfig:
     """Filesystem locations used by the project."""
 
@@ -114,6 +123,7 @@ class Config:
     sea: SeaConfig
     drainage: DrainageConfig
     rivers: RiversConfig
+    ui: UiConfig
     paths: PathsConfig
 
 
@@ -192,6 +202,12 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
             **{k: int(_require(rivers_raw, k, "rivers")) for k in int_keys},
         ),
     )
+    ui_raw = _require(raw, "ui", "")
+    ui = UiConfig(
+        host=str(_require(ui_raw, "host", "ui")),
+        port=int(_require(ui_raw, "port", "ui")),
+        open_browser=bool(_require(ui_raw, "open_browser", "ui")),
+    )
     paths_raw = _require(raw, "paths", "")
     paths = PathsConfig(
         sample_images_dir=_resolve(base_dir, _require(paths_raw, "sample_images_dir", "paths")),
@@ -208,5 +224,6 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         sea=sea,
         drainage=drainage,
         rivers=rivers,
+        ui=ui,
         paths=paths,
     )

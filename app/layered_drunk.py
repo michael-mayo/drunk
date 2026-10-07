@@ -1,7 +1,9 @@
 """Multi-scale terrain: composites of drunks at several scales, combined into one height field."""
 
 import os
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import as_completed
 from pathlib import Path
 
 import numpy as np
@@ -100,10 +102,16 @@ class LayeredDrunk:
         """Number of steps each drunk has taken."""
         return self.layers[0].num_steps
 
-    def steps(self, n: int = 100) -> None:
-        """Advance every drunk in every layer by ``n`` steps (each layer's members in parallel)."""
-        for layer in self.layers:
+    def steps(self, n: int = 100, progress: Callable[[float, str], None] | None = None) -> None:
+        """Advance every drunk in every layer by ``n`` steps (each layer's members in parallel).
+
+        ``progress``, if given, is called after each layer with the fraction
+        of layers done and a short message.
+        """
+        for i, (layer, scale) in enumerate(zip(self.layers, self.scales)):
             layer.steps(n)
+            if progress is not None:
+                progress((i + 1) / len(self.layers), f"walked layer {i + 1} of {len(self.layers)} (scale {scale:g})")
 
     def _layer_grid(
         self,
@@ -126,13 +134,15 @@ class LayeredDrunk:
         gy: np.ndarray,
         cutoff: float = 1 / 4096,
         period: float | None = None,
+        progress: Callable[[float, str], None] | None = None,
     ) -> np.ndarray:
         """The combined height field on the grid ``gx`` x ``gy``, scaled to [0, 1].
 
         With ``period``, the grid is one tile of a wrap-around map (see
         ``periodic_axis``). Every layer's drunks are evaluated in parallel, in
         batches. Batches are summed per layer in the parent in a fixed order,
-        so the result is deterministic.
+        so the result is deterministic. ``progress``, if given, is called as
+        each batch finishes with the fraction of batches done and a message.
         """
         workers = self.max_workers or os.process_cpu_count() or 1
         tasks = []
@@ -141,8 +151,17 @@ class LayeredDrunk:
             for batch in np.array_split(np.arange(len(layer.drunks)), workers):
                 if len(batch):
                     tasks.append((j, [layer.drunks[i] for i in batch], lx, ly))
+        fields: list[np.ndarray | None] = [None] * len(tasks)
         with ProcessPoolExecutor(max_workers=workers) as pool:
-            fields = list(pool.map(_density_sum, *zip(*[(d, lx, ly, cutoff, period) for _, d, lx, ly in tasks])))
+            futures = {
+                pool.submit(_density_sum, d, lx, ly, cutoff, period): i for i, (_, d, lx, ly) in enumerate(tasks)
+            }
+            # Collect as batches finish (for progress), but keep each result in its task slot
+            # so the per-layer sums below run in a fixed order.
+            for done, future in enumerate(as_completed(futures), start=1):
+                fields[futures[future]] = future.result()
+                if progress is not None:
+                    progress(done / len(tasks), f"evaluated {done} of {len(tasks)} batches of deposits")
 
         sums: dict[int, np.ndarray] = {}
         for (j, _, _, _), f in zip(tasks, fields):

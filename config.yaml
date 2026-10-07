@@ -120,6 +120,13 @@ rivers:
   # Steps without getting closer to the sea before switching to steepest descent.
   stall_steps: 50
 
+ui:
+  # Web UI (app/ui.py): served at http://<host>:<port>/.
+  host: 127.0.0.1
+  port: 9000
+  # Open the page in the default web browser when the server starts.
+  open_browser: true
+
 paths:
   # Folder of sample input images.
   sample_images_dir: sample_images

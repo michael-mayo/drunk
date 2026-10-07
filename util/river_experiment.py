@@ -38,7 +38,7 @@ from app.config import load_config
 from app.drainage import fill_hollows
 from app.layered_drunk import LayeredDrunk
 from app.layered_drunk import periodic_axis
-from app.main import _build_layer
+from app.pipeline import build_layer
 from app.rivers import carve_rivers
 from app.sea import sea_level
 from util.reference_terrain import square_crops
@@ -68,7 +68,7 @@ def cached_map(config: Config, seed: int) -> np.ndarray:
     if path.exists():
         return np.load(path)
     rng = np.random.default_rng(seed)
-    layers = [_build_layer(config, scale, rng) for scale in config.layers.scales]
+    layers = [build_layer(config, scale, rng) for scale in config.layers.scales]
     terrain = LayeredDrunk(layers, config.layers.scales, config.layers.h, max_workers=config.parallel.max_workers)
     terrain.steps(config.walk.num_steps)
     grid = periodic_axis(config.plot.domain, config.plot.grid_points)
