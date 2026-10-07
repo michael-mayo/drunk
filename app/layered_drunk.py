@@ -45,12 +45,12 @@ class LayeredDrunk:
     the same mix of drunks is a statistically exact ``s``-times enlargement of
     one at scale 1. The layers are combined as
 
-        sum_j (s_j / s_min) ** h * L_j / std(L_j)
+        sum_j w_j * L_j / std(L_j)
 
     then scaled linearly to [0, 1]. Scaling each layer to unit standard
-    deviation makes the weights alone set how much relief each scale
-    contributes, so height differences grow with distance roughly as
-    ``lag ** h``, like natural terrain.
+    deviation makes the weights ``w_j`` alone set how much relief each scale
+    contributes. Weights growing as ``s ** h`` make height differences grow
+    with distance roughly as ``lag ** h``, like natural terrain.
 
     A layer at scale ``s`` is ``s / s_min`` times smoother than the finest, so
     it is evaluated on a grid that much coarser and resampled bilinearly,
@@ -59,15 +59,15 @@ class LayeredDrunk:
     seamlessly. Drunks' homes should be sampled inside the map.
     """
 
-    def __init__(self, layers: list[CompositeDrunk], scales: list[float], h: float) -> None:
-        """Combine ``layers`` (one composite per entry of ``scales``) with weighting exponent ``h``."""
-        if not layers or len(layers) != len(scales):
-            raise ValueError("LayeredDrunk needs one or more layers, one per scale")
+    def __init__(self, layers: list[CompositeDrunk], scales: list[float], weights: list[float]) -> None:
+        """Combine ``layers`` (one composite per entry of ``scales``), each scaled to unit std and multiplied by its weight."""
+        if not layers or not len(layers) == len(scales) == len(weights):
+            raise ValueError("LayeredDrunk needs one or more layers, each with a scale and a weight")
         if min(scales) <= 0:
             raise ValueError(f"layer scales must be positive, got {scales}")
         self.layers = list(layers)
         self.scales = [float(s) for s in scales]
-        self.h = h
+        self.weights = [float(w) for w in weights]
 
     @property
     def num_steps(self) -> int:
@@ -99,7 +99,7 @@ class LayeredDrunk:
         """Each layer's weighted contribution to the height field, on a ``grid_points`` x ``grid_points`` wrap-around grid.
 
         Layer ``j`` is evaluated on its coarser grid, resampled, scaled to
-        unit standard deviation and weighted by ``(s_j / s_min) ** h``; the
+        unit standard deviation and multiplied by its weight; the
         height field is their sum. ``progress``, if given, is called after
         each layer with the fraction of layers done and a message.
         """
@@ -108,7 +108,7 @@ class LayeredDrunk:
             coarse = layer.density(domain, self.layer_grid_points(scale, grid_points), cutoff)
             field = _resample_periodic(coarse, grid_points)
             sd = field.std()
-            fields.append((scale / min(self.scales)) ** self.h * field / sd if sd > 0 else np.zeros_like(field))
+            fields.append(self.weights[i] * field / sd if sd > 0 else np.zeros_like(field))
             if progress is not None:
                 progress((i + 1) / len(self.layers), f"evaluated layer {i + 1} of {len(self.layers)} (scale {scale:g})")
         return fields
@@ -133,11 +133,11 @@ class LayeredDrunk:
 
     def __str__(self) -> str:
         """Summary of the layered field and of each layer."""
-        lines = [f"LayeredDrunk(layers={len(self.layers)}, scales={self.scales}, h={self.h}, steps={self.num_steps})"]
-        for scale, layer in zip(self.scales, self.layers):
+        lines = [f"LayeredDrunk(layers={len(self.layers)}, steps={self.num_steps})"]
+        for scale, weight, layer in zip(self.scales, self.weights, self.layers):
             d = layer.drunks[0]
             lines.append(
-                f"  scale={scale:g}: {len(layer.drunks)} drunks, step_size={d.step_size:g}, "
+                f"  scale={scale:g} weight={weight:g}: {len(layer.drunks)} drunks, step_size={d.step_size:g}, "
                 f"r0={d.r0:g}, variance={d.variance:g}, kappa_max {min(x.kappa_max for x in layer.drunks):.4g}"
                 f"-{max(x.kappa_max for x in layer.drunks):.4g}"
             )

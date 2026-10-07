@@ -6,7 +6,8 @@
 ("drunks"), as a basis for Cities: Skylines II maps.
 
 Each drunk staggers around its home, leaving a trail of small Gaussian bumps. Hundreds of drunks
-at four scales are summed into a multi-scale height field whose statistics match real terrain.
+at six scales are summed into a multi-scale height field: continents and seas tens of kilometres
+across, with hills, valleys and lakes whose statistics match real terrain.
 Sea level is then set, hollows are filled so every land cell drains to the sea, and "river
 drunks" carve graded valleys down to the coast. Everything heavy runs in compiled, parallel
 [numba](https://numba.pydata.org/) code, so a whole 57 km world map (1600 × 1600 cells) takes
@@ -98,13 +99,15 @@ there too (see [Configuration](#configuration)). Maps are saved as
 on a 16-core machine (about 7 s each to generate, plus drawing). Example console output:
 
 ```
-seed 41: LayeredDrunk(layers=4, scales=[0.5, 1.0, 2.0, 4.0], h=0.5, steps=1000)
-  scale=0.5: 3200 drunks, step_size=0.5, r0=5, variance=0.25, kappa_max 0.01-0.4
-  scale=1: 3200 drunks, step_size=1, r0=10, variance=1, kappa_max 0.01-0.4
-  scale=2: 3200 drunks, step_size=2, r0=20, variance=4, kappa_max 0.01-0.4
-  scale=4: 3200 drunks, step_size=4, r0=40, variance=16, kappa_max 0.01-0.4
-  sea level 0.394
-  rivers: 1221 carved (716 reach the sea, 505 are tributaries); every land cell drains to the sea
+seed 41: LayeredDrunk(layers=6, steps=1000)
+  scale=0.5 weight=1: 3200 drunks, step_size=0.5, r0=5, variance=0.25, kappa_max 0.01-0.4
+  scale=1 weight=1.414: 3200 drunks, step_size=1, r0=10, variance=1, kappa_max 0.01-0.4
+  scale=2 weight=2: 3200 drunks, step_size=2, r0=20, variance=4, kappa_max 0.01-0.4
+  scale=4 weight=2.828: 3200 drunks, step_size=4, r0=40, variance=16, kappa_max 0.01-0.4
+  scale=8 weight=4: 200 drunks, step_size=8, r0=80, variance=64, kappa_max 0.05-1
+  scale=16 weight=6: 50 drunks, step_size=16, r0=160, variance=256, kappa_max 0.05-1
+  sea level 0.463
+  rivers: 799 carved (434 reach the sea, 365 are tributaries); every land cell drains to the sea
 Saved /home/michael/drunk/output/terrain_seed41.png
 seed 42: ...
 seed 43: ...
@@ -159,11 +162,11 @@ sea, drained land and rivers.
 
 ```mermaid
 flowchart LR
-    S[seed] --> B[build 4 layers<br/>of 3200 drunks]
+    S[seed] --> B[build 6 layers<br/>of drunks]
     B --> W[walk every drunk<br/>1000 steps]
     W --> D[sum each layer's<br/>Gaussian deposits]
     D --> H[weight and add layers<br/>scale to 0..1]
-    H --> SL[set sea level<br/>15% of the map]
+    H --> SL[set sea level<br/>40% of the map]
     SL --> R[carve rivers<br/>drain to the sea]
     R --> P[terrain_seedN.png]
     R --> U[web UI: pick the<br/>playable area]
@@ -198,17 +201,18 @@ A drunk's height field is the sum of its deposits.
 
 ### 2. Many drunks in a layer
 
-A **layer** (`CompositeDrunk`) holds 3200 drunks over the world map, 200 per playable area. Within
-a layer they differ only in:
+A **layer** (`CompositeDrunk`) holds many drunks: 3200 over the world map in each of the four fine
+layers (200 per playable area). Within a layer they differ only in:
 
 - **Seed:** each drunk's walk depends only on its own seed.
 - **Home:** homes are spread evenly but irregularly over the map by Poisson-disk sampling
   (`app/sampling.py`): no two are closer than a minimum spacing, chosen automatically (about 4.8
   units for 3200 drunks in the 384 × 384 world). Spacing is measured across the map's edges, since the
   map wraps around.
-- **`kappa_max`:** spread from 0.01 to 0.4 with power-log spacing. Member `i` of `n` gets
+- **`kappa_max`:** spread between the layer's `kappa_max_start` and `kappa_max_end` (0.01 to 0.4
+  in the fine layers) with power-log spacing. Member `i` of `n` gets
   `kappa_max_start · (kappa_max_end / kappa_max_start) ^ (t ^ p)`, with `t = i / (n − 1)` and
-  `p = composite.kappa_max_power`. With `p = 4` most drunks are weakly biased and wander widely,
+  `p` the layer's `kappa_max_power`. With `p = 4` most drunks are weakly biased and wander widely,
   while a few strongly biased ones form compact peaks:
 
 | Spacing (20 drunks) | Median `kappa_max` | Drunks < 0.02 | Drunks < 0.05 | Drunks < 0.1 |
@@ -216,43 +220,71 @@ a layer they differ only in:
 | Linear (for comparison) | 0.205 | 1 | 2 | 5 |
 | Logarithmic (`p = 1`) | 0.064 | 4 | 9 | 12 |
 | Power-log, `p = 2` | 0.025 | 9 | 13 | 16 |
-| **Power-log, `p = 4` (default)** | **0.013** | **13** | **16** | **17** |
+| **Power-log, `p = 4` (fine layers)** | **0.013** | **13** | **16** | **17** |
 
-### 3. Layers at four scales
+### 3. Layers at six scales
 
-One layer alone has relief at only one size. A **`LayeredDrunk`** stacks layers at scales
-`s` = 0.5, 1, 2 and 4. A layer at scale `s` multiplies the step size and `r0` by `s` and the
-deposit variance by `s²`. Everything else is the same, so each layer is a statistically exact
-`s`-times enlargement of the same terrain. The layers are combined as
+One layer alone has relief at only one size. A **`LayeredDrunk`** stacks six layers, each
+configured separately in `config.yaml`'s `layers` list. A layer at scale `s` multiplies the step
+size and `r0` by `s` and the deposit variance by `s²`, so with the same mix of drunks it is a
+statistically exact `s`-times enlargement. The layers are combined as
 
 ```
-height = Σ_j (s_j / s_min)^h · L_j / std(L_j)        then scaled linearly to [0, 1]
+height = Σ_j w_j · L_j / std(L_j)        then scaled linearly to [0, 1]
 ```
 
-Each layer is first scaled to unit standard deviation, so the weights `(s / s_min)^h` alone set
-how much relief each scale adds. Larger scales get more weight, so height differences grow with
-distance as `distance^h`, as in natural terrain (`h = 0.5`). A layer at scale `s` is smoother, so
-it is evaluated on a grid `s / s_min` times coarser and resampled, which keeps every layer
-equally cheap.
+Each layer is first scaled to unit standard deviation, so its weight `w_j` alone sets how much
+relief it adds. A layer at scale `s` is smoother, so it is evaluated on a grid `s / 0.5` times
+coarser and resampled, which keeps every layer cheap.
 
-![The four weighted layers of seed 41 and their sum](sample_images/layers.png)
-
-**Why it looks like real terrain.** `util/terrain_experiment.py` compared generated maps with 48
-crops of real terrain, 14.3 km across, from six mountain and upland regions:
-
-| | Spectral slope β | Roughness H | Hypsometric integral | Skewness |
+| Scale | Drunks | `kappa_max` | Weight | Role |
 |---|---|---|---|---|
-| Real terrain | 3.85 ± 0.45 | 0.57 ± 0.12 | 0.43 ± 0.09 | +0.12 ± 0.42 |
-| Single layer (old design) | 4.28 | 0.47 | 0.08 | +2.37 |
-| Four layers (default) | 3.84 | 0.50 | 0.46 | +0.06 |
+| 0.5, 1, 2, 4 | 3200 each | 0.01–0.4, `p = 4` | 1, 1.41, 2, 2.83 | **Texture:** hills and valleys up to ~4 km across. Weights `(s / 0.5)^0.5`, so relief grows with distance as `distance^0.5`, as in natural terrain |
+| 8 | 200 | 0.05–1, `p = 1` | 4 | **Regions:** highlands and basins ~10 km across |
+| 16 | 50 | 0.05–1, `p = 1` | 6 | **Continents and seas,** tens of km across |
 
-These figures come from the original pure-Python implementation. After the numba rewrite, the
-same statistics over seeds 1–8 (without sea or rivers) are unchanged within noise:
+![The six weighted layers of seed 41's playable area and their sum](sample_images/layers.png)
 
-| Seeds 1–8 (mean) | β | H | Hypsometric integral | Skewness | Sea level (15%) |
-|---|---|---|---|---|---|
-| Pure Python (before) | 3.81 | 0.51 | 0.45 | +0.22 | 0.284 |
-| numba (now) | 3.85 | 0.50 | 0.44 | +0.18 | 0.275 |
+**Why the two big layers.** With only the four fine layers, the largest features are about 4 km
+across (correlation length 27 walk units), so the 57 km world holds about 14 × 14 copies of the
+same texture. Every playable-sized window had 3–40% sea, scattered among about 250 small basins
+with no real ocean. Drunks wrapping round the world weren't the cause: no fine-layer drunk below
+scale 4 gets half a world from home. The big layers have few, strongly biased drunks: few enough
+to form distinct land masses rather than averaging into smooth noise, and biased enough to stay
+together rather than smearing around the world. Measured over seeds 41–45 at 40% below sea level
+(`util/nature_check.py`):
+
+| | Four fine layers only | Six layers (default) |
+|---|---|---|
+| Seas (below-sea regions ≥ 1% of the world) | 4.6, ragged, covering 34% | 2.0, covering 37% |
+| Lakes (smaller below-sea regions, on land) | 215, covering 6.3% | 99, covering 2.5% |
+| Sea share between playable-sized windows (sd) | 11% | 25% (from all-land to all-sea) |
+
+Seed by seed (41–45), one to three seas cover 36–39% of the world and lakes 1.3–4.3%; together
+they are the 40% below sea level. Land below sea level that isn't connected to a sea stays as
+lakes: it is never filled.
+
+**Still like real terrain.** Every playable-sized window (16 per world, 400 × 400 cells) is
+compared with 48 crops of real terrain, 14.3 km across, from six mountain and upland regions
+(Copernicus GLO-30). Both are measured the same way: after rivers are carved, with channel
+concavity fitted per window with its edges and sea as outlets:
+
+| | Spectral slope β | Roughness H | Hypsometric integral | Skewness | Concavity θ | Distance |
+|---|---|---|---|---|---|---|
+| Real terrain | 3.91 ± 0.55 | 0.56 ± 0.15 | 0.43 ± 0.09 | +0.15 ± 0.50 | 0.33 ± 0.06 | 0 |
+| Four fine layers, 15% sea | 3.67 | 0.48 | 0.45 | +0.14 | 0.32 | 0.35 |
+| Six layers, scale-16 weight 8 | 3.69 | 0.60 | 0.46 | +0.14 | 0.26 | 0.57 |
+| **Six layers, scale-16 weight 6 (default)** | 3.69 | 0.57 | 0.46 | +0.12 | 0.28 | **0.42** |
+
+"Distance" is the RMS of the z-scores of the means; every default statistic is within 0.75 real
+standard deviations. The continent layers improve roughness (0.48 → 0.57, real 0.56), but at full
+weight 8 their long regional slopes lowered channel concavity. A weight of 6 gives the same
+continents (same number and share of seas, same variety between windows) and keeps concavity
+close to real. River settings (sources, bed concavity, valley width) barely change it.
+
+Earlier tuning of the fine layers, with `util/terrain_experiment.py` on single 14 km maps, chose
+four layers over a single one (spectral slope 3.84 against 4.28, hypsometric integral 0.46
+against 0.08; real terrain 3.85 and 0.43).
 
 ### 4. The map wraps around
 
@@ -269,7 +301,7 @@ right edge continues from the left edge, and likewise top and bottom. This has f
 
 **World map and playable area.** The terrain was tuned so that 96 walk units look like a real
 14.3 km area: one CS2 playable area. The world map is four times wider, 384 units (57.344 km),
-with 16 times as many drunks (3200 per layer) and river sources (1600), so every playable-sized
+with 16 times as many fine-layer drunks (3200 per layer) and river sources (1600), so every playable-sized
 window of it has the same terrain statistics. The grid is 1600 × 1600, so the playable area at the
 centre is exactly 400 × 400 cells. Drunks don't need to reach the edges for this to work: homes are
 spread over the whole world, each drunk builds terrain only within about 100 units of its home,
@@ -283,10 +315,11 @@ playable square is always drawn.
 
 ![Post-processing stages of seed 41](sample_images/stages.png)
 
-1. **Sea level** (`app/sea.py`) is set so that `sea.water_fraction` (15%) of the map lies below
-   it. Every map then gets the same share of sea, whatever its heights. For the three sample maps
-   it is 0.269 to 0.394. Heights are not changed. Everything below sea level counts as sea,
-   including landlocked basins, so the sea is a scatter of basins rather than one ocean.
+1. **Sea level** (`app/sea.py`) is set so that `sea.water_fraction` (40%) of the map lies below
+   it. Every map then gets the same share below sea level, whatever its heights. For the three
+   sample maps it is 0.313 to 0.463. Heights are not changed. Most of that is one or two large
+   seas; the rest is lakes on land (below sea level but not connected to a sea), which are left
+   as they are.
 2. **Draining** (`app/drainage.py`) fills hollows. About 11% of the raw terrain's land sits in
    closed depressions (real terrain: about 1.5%), where water would pool instead of reaching the
    sea, as Cities: Skylines II's water simulation needs. A priority-flood fill (Barnes et al.,
@@ -308,7 +341,8 @@ playable square is always drawn.
    - The map is drained again afterwards.
 
 River carving brings channel concavity (θ in `slope ∝ area^−θ`) from 0.10 to real terrain's
-0.33. The defaults were tuned with `util/river_experiment.py` against the same real-terrain crops:
+0.33. The defaults were tuned with `util/river_experiment.py` against the same real-terrain crops,
+on single 14 km maps with 100 sources each (the world's 1600 sources are the same density):
 
 | | β | H | HI | Skewness | Concavity θ | Distance |
 |---|---|---|---|---|---|---|
@@ -331,10 +365,10 @@ All heavy work is compiled with numba and runs in parallel on every core (`paral
 
 | Stage | Where | Time (1600 × 1600 world map, 16 cores) |
 |---|---|---|
-| Sample 12 800 homes (Poisson disk) | `app/sampling.py` `_bridson` | ~0.2 s |
-| Walk 12 800 drunks × 1000 steps | `app/drunk.py` `_walk` | ~0.3 s |
-| Sum 12.8 million Gaussian deposits | `app/deposits.py` `_deposit_field` | ~3.1 s |
-| Fill hollows, carve 1200 rivers | `app/drainage.py`, `app/rivers.py` | ~3.3 s |
+| Sample 13 050 homes (Poisson disk) | `app/sampling.py` `_bridson` | ~0.2 s |
+| Walk 13 050 drunks × 1000 steps | `app/drunk.py` `_walk` | ~0.3 s |
+| Sum 13 million Gaussian deposits | `app/deposits.py` `_deposit_field` | ~3.5 s (the two big layers ~0.3 s) |
+| Fill hollows, carve ~800 rivers | `app/drainage.py`, `app/rivers.py` | ~3.4 s |
 | Draw the PNG | `app/rendering.py` (matplotlib) | ~0.5 s |
 
 That is about 7 s to generate a world map, and 0.5 s to draw it (or redraw it re-centred in the
@@ -364,12 +398,12 @@ resolved against the folder containing the config file.
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `seeds` | list of int | `[41, 42, 43]` | `app.main` makes one map per seed |
-| `layers.scales` | list of float | `[0.5, 1.0, 2.0, 4.0]` | One layer per scale `s`: step size and `r0` × `s`, deposit variance × `s²` |
-| `layers.h` | float | `0.5` | Layer weighting exponent: layer `j` is weighted `(s_j / s_min)^h` after scaling to unit standard deviation |
-| `composite.drunks` | int | `3200` | Drunks in each layer: 200 per playable area (96 × 96 units), the density the terrain was tuned at; scale with `plot.domain`'s area |
-| `composite.kappa_max_start` | float | `0.01` | `kappa_max` of the first drunk in each layer (> 0) |
-| `composite.kappa_max_end` | float | `0.4` | `kappa_max` of the last drunk (> 0) |
-| `composite.kappa_max_power` | float | `4.0` | Power-log spacing exponent: `1` = logarithmic, `> 1` = more drunks near `kappa_max_start` |
+| `layers` | list | six layers (see [Layers at six scales](#3-layers-at-six-scales)) | One entry per layer, each with the settings below |
+| `layers[].scale` | float | `0.5` … `16.0` | Step size and `r0` × `scale`, deposit variance × `scale²` (> 0) |
+| `layers[].drunks` | int | `3200` (fine), `200`, `50` | Drunks in the layer. The fine layers have 200 per playable area (96 × 96 units), the density they were tuned at; scale with `plot.domain`'s area |
+| `layers[].kappa_max_start` / `kappa_max_end` | float | `0.01` / `0.4` (fine), `0.05` / `1.0` (big) | `kappa_max` of the layer's first and last drunk (both > 0) |
+| `layers[].kappa_max_power` | float | `4.0` (fine), `1.0` (big) | Power-log spacing exponent: `1` = logarithmic, `> 1` = more drunks near `kappa_max_start` |
+| `layers[].weight` | float | `1`, `1.414`, `2`, `2.828`, `4`, `6` | The layer is scaled to unit standard deviation, then multiplied by this (≥ 0) |
 | `parallel.threads` | int or `null` | `null` | Threads for the numba kernels (`null` = every core); results are identical whatever the number |
 | `walk.num_steps` | int | `1000` | Steps each drunk takes |
 | `walk.step_size` | float | `1.0` | Step length, at scale 1 |
@@ -380,7 +414,7 @@ resolved against the folder containing the config file.
 | `plot.domain` | float | `384.0` | Side of the square, wrap-around world map, centred on the origin, in walk units (drawn as `cs2.world_width_km`); 96 units is one playable area |
 | `plot.grid_points` | int | `1600` | Grid points per side of the height field (400 per playable area) |
 | `plot.cutoff` | float | `0.000244140625` (1/4096) | Each deposit is evaluated only where it exceeds `cutoff` × its peak (≈ 4.08 standard deviations); must be in (0, 1) |
-| `sea.water_fraction` | float | `0.15` | Share of each map that is sea (also the UI slider's default); in [0, 1), `0` = no sea, so no draining or rivers |
+| `sea.water_fraction` | float | `0.4` | Share of each map below sea level, seas and lakes together (also the UI slider's default); in [0, 1), `0` = no sea, so no draining or rivers |
 | `drainage.fill` | bool | `true` | Fill hollows when rivers are off (river carving always drains) |
 | `drainage.epsilon` | float | `0.000001` | Gradient left across filled hollows, in normalised height per cell |
 | `rivers.enabled` | bool | `true` | Carve rivers after setting sea level |
@@ -463,6 +497,42 @@ python util/readme_figures.py
 python util/readme_figures.py --out output/figures
 ```
 
+### `util/nature_check.py`: check the terrain against real terrain
+
+Needs the Copernicus tiles (see [Setup](#setup)). Run it after changing the layers or rivers.
+Generates one finished world per seed from the app config, cuts each into playable-sized windows
+(16 per world), and measures every window like the real-terrain crops: spectral slope, roughness,
+hypsometric integral, skewness and channel concavity (with the window's edges and sea as outlets).
+It prints the model's and real terrain's means, the z-scores and the overall distance (RMS
+z-score, 0 = matches), plus each world's seas, lakes and variety between windows; the summary is
+also written to `output/experiments/nature_check.txt`. Takes about 45 s for five worlds.
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `--config` | path | optional | `config.yaml` | App config to generate from |
+| `--seeds` | str | optional | `41,42,43,44,45` | Comma-separated seeds, one world each |
+| `--dem-dir` | path | optional | `data/dem` | Folder of Copernicus tiles |
+| `--crops-per-tile` | int | optional | `8` | Real-terrain crops per tile |
+
+```bash
+python util/nature_check.py
+python util/nature_check.py --seeds 1,2,3,4,5,6,7,8,9,10
+```
+
+Example output (the default config):
+
+```
+5 worlds (41, 42, 43, 44, 45), 80 windows of 400 x 400 cells, 48 real crops; 43 s
+
+                                  beta               H              HI            skew       concavity
+real terrain              3.913 ± 0.55    0.561 ± 0.15    0.426 ± 0.09    0.148 ± 0.50    0.331 ± 0.06
+generated windows         3.691 ± 0.11    0.572 ± 0.04    0.461 ± 0.05    0.122 ± 0.31    0.284 ± 0.10
+z-score of the mean              -0.41            0.08            0.42           -0.05           -0.74
+
+distance from real terrain (RMS z-score): 0.42
+per world, at 40% below sea level: 2.0 seas covering 37%, 99 lakes covering 2.5%, sea share varying by 25% (sd) between windows
+```
+
 ### `util/terrain_experiment.py`: compare generation settings with real terrain
 
 Needs the Copernicus tiles (see [Setup](#setup)). For each configuration in an experiment YAML it
@@ -539,13 +609,13 @@ result.river_area   # catchment area of each river cell (0 elsewhere)
 | `generate_terrain(config, seed, progress=None)` | `app.pipeline` | The whole pipeline; returns a `TerrainResult` (field, sea level, rivers, state); `.centred_on(cx, cy)` rolls it so a cell is at the centre |
 | `playable_crop(config, field)` | `app.pipeline` | The central playable area of a world-map field (400 × 400 of 1600 × 1600) |
 | `generate_height_field(config, seed, progress=None)` | `app.pipeline` | Only the raw height field: returns `(LayeredDrunk, field)` |
-| `build_layer(config, scale, rng)` | `app.pipeline` | One layer's `CompositeDrunk` at `scale` |
+| `build_layer(config, layer, rng)` | `app.pipeline` | The `CompositeDrunk` for one `LayerConfig` (an entry of `config.layers`) |
 | `Drunk(seed, step_size, kappa_max, r0, variance, decay, initial_amplitude, home)` | `app.drunk` | A drunk's parameters (frozen dataclass); `seed` must be in [0, 2³²) |
 | `walk_drunks(drunks, num_steps)` | `app.drunk` | Walk drunks in parallel; returns their `Deposits`, drunk by drunk |
 | `Deposits(x, y, angle, var_major, var_minor, amplitude)` | `app.deposits` | Deposits as parallel arrays |
 | `deposit_field(deposits, origin, spacing, n, cutoff, periodic)` | `app.deposits` | Sum deposits on an `n` × `n` grid, wrapping around if `periodic` |
 | `CompositeDrunk(drunks)` | `app.composite_drunk` | A layer: `.walk(num_steps)`, then `.density(domain, grid_points, cutoff)` |
-| `LayeredDrunk(layers, scales, h)` | `app.layered_drunk` | Layers combined: `.walk(num_steps)`, `.layer_fields(...)`, `.density(domain, grid_points, cutoff)` |
+| `LayeredDrunk(layers, scales, weights)` | `app.layered_drunk` | Layers combined: `.walk(num_steps)`, `.layer_fields(...)`, `.density(domain, grid_points, cutoff)` |
 | `sea_level(field, water_fraction)` | `app.sea` | Height below which `water_fraction` of the field lies |
 | `fill_hollows(field, outlets, periodic, epsilon)` | `app.drainage` | Priority-flood fill so every cell drains to an outlet |
 | `flow_accumulation(field, periodic)` | `app.drainage` | D8 flow routing: catchment area and downhill slope of every cell |
@@ -604,7 +674,7 @@ classDiagram
     class pipeline {
         +generate_terrain(config, seed, progress) TerrainResult
         +generate_height_field(config, seed, progress) tuple
-        +build_layer(config, scale, rng) CompositeDrunk
+        +build_layer(config, layer, rng) CompositeDrunk
     }
     class TerrainResult {
         <<frozen dataclass>>
@@ -619,7 +689,7 @@ classDiagram
     class LayeredDrunk {
         +layers list~CompositeDrunk~
         +scales list~float~
-        +h float
+        +weights list~float~
         +walk(num_steps, progress) None
         +layer_fields(domain, grid_points, cutoff, progress) list
         +density(domain, grid_points, cutoff, progress) ndarray
@@ -709,6 +779,7 @@ drunk/
 ├── tests/                   # pytest suite
 ├── util/                    # Standalone tools
 │   ├── readme_figures.py            # Draws the README's explanatory figures
+│   ├── nature_check.py              # Checks generated worlds against real terrain, window by window
 │   ├── terrain_experiment.py        # Compares generation settings with real terrain
 │   ├── terrain_experiment*.yaml     # Its experiment definitions (phases 1-6)
 │   ├── river_experiment.py          # Tunes river carving against real terrain

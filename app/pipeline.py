@@ -15,6 +15,7 @@ import numpy as np
 
 from app.composite_drunk import CompositeDrunk
 from app.config import Config
+from app.config import LayerConfig
 from app.drainage import fill_hollows
 from app.drunk import Drunk
 from app.layered_drunk import LayeredDrunk
@@ -79,22 +80,18 @@ def playable_crop(config: Config, field: np.ndarray) -> np.ndarray:
     return field[n // 2 - half : n // 2 + half, n // 2 - half : n // 2 + half]
 
 
-def build_layer(config: Config, scale: float, rng: np.random.Generator) -> CompositeDrunk:
-    """Create one layer's composite at ``scale``.
+def build_layer(config: Config, layer: LayerConfig, rng: np.random.Generator) -> CompositeDrunk:
+    """Create the composite for one ``layer`` of the height map.
 
     Its drunks are identical except for a seed and home drawn from ``rng`` and
-    a power-log spaced kappa_max; step size and r0 are multiplied by ``scale``
-    and deposit variance by ``scale**2``.
+    a power-log spaced kappa_max; step size and r0 are multiplied by the
+    layer's scale and deposit variance by its square.
     """
-    n = config.composite.drunks
+    n = layer.drunks
+    scale = layer.scale
     seeds = [int(s) for s in rng.integers(0, 2**32, size=n)]
     homes = poisson_disk_points(n, config.plot.domain, rng, periodic=True)
-    kappa_maxes = power_log_spacing(
-        config.composite.kappa_max_start,
-        config.composite.kappa_max_end,
-        n,
-        config.composite.kappa_max_power,
-    )
+    kappa_maxes = power_log_spacing(layer.kappa_max_start, layer.kappa_max_end, n, layer.kappa_max_power)
     drunks = [
         Drunk(
             seed,
@@ -142,8 +139,8 @@ def generate_height_field(
     set_threads(config)
     report("build")(0.0, "building layers of drunks")
     rng = np.random.default_rng(seed)
-    layers = [build_layer(config, scale, rng) for scale in config.layers.scales]
-    terrain = LayeredDrunk(layers, config.layers.scales, config.layers.h)
+    layers = [build_layer(config, layer, rng) for layer in config.layers]
+    terrain = LayeredDrunk(layers, [layer.scale for layer in config.layers], [layer.weight for layer in config.layers])
 
     report("walk")(0.0, "walking drunks")
     terrain.walk(config.walk.num_steps, progress=report("walk"))

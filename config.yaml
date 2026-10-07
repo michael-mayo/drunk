@@ -6,33 +6,30 @@
 # that map's drunk seeds and homes.
 seeds: [41, 42, 43]
 
+# The height map is the weighted sum of layers, each a CompositeDrunk of
+# identical drunks at one scale. A layer at scale s multiplies walk.step_size
+# and walk.r0 by s and deposit.variance by s^2. Within a layer the drunks
+# differ only in their random seed, home (Poisson-disk sampled over the world)
+# and kappa_max, which uses power-log spacing: member i of n gets
+#   kappa_max_start * (kappa_max_end / kappa_max_start) ** (t ** kappa_max_power),
+# with t = i / (n - 1) (both ends > 0; power 1 = logarithmic, > 1 crowds the
+# drunks towards kappa_max_start). Each layer is scaled to unit standard
+# deviation, multiplied by its weight, and the sum is scaled to [0, 1].
+#
+# The four fine layers (scales 0.5-4, 200 drunks per 96 x 96 playable area,
+# weights (s / 0.5)^0.5) give the small-scale texture tuned against real
+# terrain. The two coarse ones are few, strongly biased drunks making
+# continent-sized land masses and seas: without them the largest features
+# are ~4 km across and the 57 km world looks uniform. A scale-16 weight of 6
+# (rather than 8) keeps the continents and keeps every playable-sized window
+# close to real terrain (check with util/nature_check.py).
 layers:
-  # main.py builds one height map from a CompositeDrunk at each scale. A layer
-  # at scale s multiplies walk.step_size and walk.r0 by s and
-  # deposit.variance by s^2, making it an s-times enlargement of the same mix
-  # of drunks. Layers are scaled to unit standard deviation, weighted by
-  # (s / smallest scale)^h, summed, and scaled linearly to [0, 1].
-  scales: [0.5, 1.0, 2.0, 4.0]
-  # Weighting exponent: relief grows with distance roughly as lag^h. 0.5 was
-  # closest to real terrain in util/terrain_experiment_phase6.yaml.
-  h: 0.5
-
-composite:
-  # Drunks in each layer's CompositeDrunk. 3200 over the 384 x 384 world is
-  # 200 per 96 x 96 area (one 14.336 km playable area), the density the
-  # terrain statistics were tuned at; scale it with the domain's area.
-  drunks: 3200
-  # Within a layer, drunks are identical except for their random seed, home and
-  # kappa_max (see the walk section). kappa_max uses power-log spacing from kappa_max_start to
-  # kappa_max_end: member i of n gets
-  #   kappa_max_start * (kappa_max_end / kappa_max_start) ** (t ** kappa_max_power),
-  # with t = i / (n - 1). Both ends must be > 0.
-  kappa_max_start: 0.01
-  kappa_max_end: 0.4
-  # 1 = logarithmic spacing; > 1 puts more members near kappa_max_start
-  # (4: median ~0.013 for 20 drunks); < 1 puts more near kappa_max_end.
-  # Every layer gets the same spacing (kappa_max has no units).
-  kappa_max_power: 4.0
+  - {scale: 0.5, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 1.0}
+  - {scale: 1.0, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 1.414}
+  - {scale: 2.0, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 2.0}
+  - {scale: 4.0, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 2.828}
+  - {scale: 8.0, drunks: 200, kappa_max_start: 0.05, kappa_max_end: 1.0, kappa_max_power: 1.0, weight: 4.0}
+  - {scale: 16.0, drunks: 50, kappa_max_start: 0.05, kappa_max_end: 1.0, kappa_max_power: 1.0, weight: 6.0}
 
 parallel:
   # Threads used by the compiled (numba) walking and deposit kernels
@@ -48,7 +45,7 @@ walk:
   # the direction back to (0, 0), with concentration
   #   kappa = kappa_max * (1 - exp(-r / r0)),  r = distance from the origin.
   # kappa_max (the maximum bias, reached far from the origin; 0 = uniform walk)
-  # is set per member from composite.kappa_max_start / kappa_max_end.
+  # is set per member from each layer's kappa_max_start / kappa_max_end.
   # Distance over which the bias builds up (kappa reaches ~63% of kappa_max at r = r0).
   r0: 10.0
 
@@ -86,7 +83,7 @@ sea:
   # Fraction of the map that is sea. Sea level is set to the height below which
   # this fraction of the map lies, so every map gets the same share of water
   # whatever its height distribution. Heights are not changed. 0 = no sea.
-  water_fraction: 0.15
+  water_fraction: 0.4
 
 drainage:
   # Fill hollows (app/drainage.py, priority-flood) so every land cell drains

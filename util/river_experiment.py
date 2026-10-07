@@ -61,7 +61,7 @@ def cached_map(config: Config, seed: int) -> np.ndarray:
     The cache key includes the settings that affect generation, so changing
     them regenerates the map.
     """
-    key = abs(hash((seed, config.layers, config.composite, config.walk, config.deposit, config.plot.domain,
+    key = abs(hash((seed, config.layers, config.walk, config.deposit, config.plot.domain,
                     config.plot.grid_points, config.plot.cutoff))) % 10**12
     path = CACHE_DIR / f"seed{seed}_{key}.npy"
     if path.exists():

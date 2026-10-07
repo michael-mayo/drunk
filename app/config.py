@@ -18,21 +18,19 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
 
 @dataclass(frozen=True)
-class LayersConfig:
-    """Scales of the layers in main.py's height map, and their weighting exponent."""
+class LayerConfig:
+    """One layer of the height map: a composite of drunks at one scale, and its weight in the sum."""
 
-    scales: tuple[float, ...]
-    h: float
-
-
-@dataclass(frozen=True)
-class CompositeConfig:
-    """Each layer's composite: number of drunks and kappa_max spacing."""
-
+    # Step size and r0 are multiplied by this, deposit variance by its square.
+    scale: float
+    # Drunks in the layer.
     drunks: int
+    # kappa_max is power-log spaced from kappa_max_start to kappa_max_end (both > 0).
     kappa_max_start: float
     kappa_max_end: float
     kappa_max_power: float
+    # The layer is scaled to unit standard deviation, then multiplied by this.
+    weight: float
 
 
 @dataclass(frozen=True)
@@ -130,8 +128,7 @@ class Config:
     """Top-level project configuration."""
 
     seeds: tuple[int, ...]
-    layers: LayersConfig
-    composite: CompositeConfig
+    layers: tuple[LayerConfig, ...]
     parallel: ParallelConfig
     walk: WalkConfig
     deposit: DepositConfig
@@ -170,17 +167,24 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
 
     base_dir = config_path.parent
     layers_raw = _require(raw, "layers", "")
-    layers = LayersConfig(
-        scales=tuple(float(s) for s in _require(layers_raw, "scales", "layers")),
-        h=float(_require(layers_raw, "h", "layers")),
+    if not isinstance(layers_raw, list) or not all(isinstance(entry, dict) for entry in layers_raw):
+        raise ValueError("config needs layers to be a list of mappings (scale, drunks, kappa_max_start, ...)")
+    layers = tuple(
+        LayerConfig(
+            scale=float(_require(entry, "scale", f"layers[{i}]")),
+            drunks=int(_require(entry, "drunks", f"layers[{i}]")),
+            kappa_max_start=float(_require(entry, "kappa_max_start", f"layers[{i}]")),
+            kappa_max_end=float(_require(entry, "kappa_max_end", f"layers[{i}]")),
+            kappa_max_power=float(_require(entry, "kappa_max_power", f"layers[{i}]")),
+            weight=float(_require(entry, "weight", f"layers[{i}]")),
+        )
+        for i, entry in enumerate(layers_raw)
     )
-    composite_raw = _require(raw, "composite", "")
-    composite = CompositeConfig(
-        drunks=int(_require(composite_raw, "drunks", "composite")),
-        kappa_max_start=float(_require(composite_raw, "kappa_max_start", "composite")),
-        kappa_max_end=float(_require(composite_raw, "kappa_max_end", "composite")),
-        kappa_max_power=float(_require(composite_raw, "kappa_max_power", "composite")),
-    )
+    if not layers:
+        raise ValueError("config needs at least one entry in layers")
+    for i, layer in enumerate(layers):
+        if layer.scale <= 0 or layer.drunks < 1 or layer.weight < 0:
+            raise ValueError(f"config needs layers[{i}] to have scale > 0, drunks >= 1 and weight >= 0")
     parallel_raw = _require(raw, "parallel", "")
     threads = _require(parallel_raw, "threads", "parallel")
     parallel = ParallelConfig(threads=None if threads is None else int(threads))
@@ -252,7 +256,6 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     return Config(
         seeds=tuple(int(x) for x in _require(raw, "seeds", "")),
         layers=layers,
-        composite=composite,
         parallel=parallel,
         walk=walk,
         deposit=deposit,

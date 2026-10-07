@@ -93,9 +93,9 @@ def layers(config: Config, path: Path) -> None:
     hi = max(np.abs(f).max() for f in fields)
     lo = -hi
     fig, axes = plt.subplots(1, len(fields) + 1, figsize=(3.2 * (len(fields) + 1), 3.6))
-    for ax, f, scale in zip(axes, fields, terrain.scales):
+    for ax, f, scale, weight in zip(axes, fields, terrain.scales, terrain.weights):
         ax.imshow(f, origin="lower", cmap="terrain", vmin=lo, vmax=hi)
-        ax.set_title(f"scale {scale:g} (weight {(scale / min(terrain.scales)) ** terrain.h:.2f})")
+        ax.set_title(f"scale {scale:g} (weight {weight:g})")
     # The sum is centred and scaled symmetrically like the layers, so the same colours mean the same thing.
     total = field - field.mean()
     edge = np.abs(total).max()
