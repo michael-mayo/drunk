@@ -136,6 +136,9 @@ ui:
   peak_height_m: 1000.0
   peak_height_min_m: 100.0
   peak_height_step_m: 10.0
+  # Sea slider (applies at Generate; rivers depend on it): the share of the map
+  # that is sea, defaulting to sea.water_fraction, up to this maximum.
+  sea_fraction_max: 0.95
 
 paths:
   # Folder of sample input images.

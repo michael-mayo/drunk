@@ -121,7 +121,7 @@ def save_terrain_map(
     # Fixed axes positions (rather than tight_layout), so the map stays in exactly
     # the same place whatever the labels: only the numbers change between scales.
     fig = plt.figure(figsize=(7, 6))
-    ax = fig.add_axes((0.09, 0.08, 0.68, 0.84))
+    ax = fig.add_axes((0.09, 0.08, 0.66, 0.84))
     cax = fig.add_axes((0.80, 0.08, 0.03, 0.84))
     extent = (gx[0], gx[-1], gy[0], gy[-1])
     image = ax.imshow(
@@ -149,6 +149,9 @@ def save_terrain_map(
         bar.set_ticks(ticks_m / height_scale_m)
         bar.set_ticklabels([f"{t:,.0f}" for t in ticks_m])
         sea_label = f"sea level\n{sea_level * height_scale_m:,.0f} m"
+    # Put the bar's title on its left, leaving the right side for ticks and the
+    # sea-level marker, which would otherwise collide when sea level is mid-range.
+    bar.ax.yaxis.set_label_position("left")
     bar.ax.axhline(sea_level, color="black", linewidth=1.0)
     bar.ax.text(1.6, sea_level, sea_label, transform=bar.ax.get_yaxis_transform(), va="center", fontsize=8)
     ax.set_xlabel("x")

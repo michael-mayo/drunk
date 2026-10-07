@@ -41,7 +41,7 @@ class TerrainResult:
     river_area: np.ndarray | None
     rivers_carved: int
     rivers_to_sea: int
-    # "rivers", "drained" or "raw".
+    # "rivers", "drained", "raw", or "no sea" (nothing to drain to, so no draining or rivers).
     state: str
 
     @property
@@ -129,7 +129,11 @@ def generate_terrain(
 
     river_area = None
     carved = to_sea = 0
-    if config.rivers.enabled:
+    if not np.any(field < level):
+        # A wrap-around map with no sea has no outlet: water can't drain anywhere,
+        # so draining and river carving are skipped.
+        state = "no sea"
+    elif config.rivers.enabled:
         report("rivers")(0.0, "carving rivers")
         field, river_area, carved, to_sea = carve_rivers(
             field, level, config.rivers.params, seed, epsilon=config.drainage.epsilon

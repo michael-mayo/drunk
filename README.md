@@ -470,7 +470,7 @@ folder containing `config.yaml`.
 | `plot.domain` | float | `96.0` | Side of the square, wrap-around map area, centred on the origin, in walk units. Homes are Poisson-disk sampled inside it (minimum spacing chosen automatically from the number of drunks) |
 | `plot.grid_points` | int | `400` | Points per side of the grid used to render the summed deposits |
 | `plot.cutoff` | float | `0.000244140625` (1/4096) | Each Gaussian is evaluated only where it exceeds `cutoff` × its peak (≈ 4.08 sd); `0` = exact |
-| `sea.water_fraction` | float | `0.15` | Fraction of each map that is sea; sea level is the height below which this fraction lies. Must be in [0, 1); `0` = no sea |
+| `sea.water_fraction` | float | `0.15` | Fraction of each map that is sea (the default for `app.main` and the UI's sea slider); sea level is the height below which this fraction lies. Must be in [0, 1); `0` = no sea (and then no draining or rivers) |
 | `drainage.fill` | bool | `true` | Fill hollows so all land drains to the sea (when rivers are off; river carving always drains) |
 | `drainage.epsilon` | float | `0.000001` | Gradient left across filled hollows, in normalised height per cell |
 | `rivers.enabled` | bool | `true` | Carve rivers with river drunks after setting sea level |
@@ -487,6 +487,7 @@ folder containing `config.yaml`.
 | `ui.open_browser` | bool | `true` | Open the page in the default browser when the UI starts (under WSL, the Windows browser) |
 | `ui.peak_height_m` | float | `1000.0` | Default peak-height slider value: normalised height 1.0 is labelled as this many metres |
 | `ui.peak_height_min_m` / `ui.peak_height_step_m` | float | `100.0` / `10.0` | Slider minimum and step, in metres |
+| `ui.sea_fraction_max` | float | `0.95` | Sea slider maximum (fraction of the map); the slider's default is `sea.water_fraction` |
 | `cs2.max_height_m` | float | `4096.0` | Height spanned by a CS2 16-bit heightmap (0–65535) at the editor's default height scale; the slider's maximum |
 | `paths.sample_images_dir` | path | `sample_images` | Folder of sample images shown in this README |
 | `paths.output_dir` | path | `output` | Folder where generated PNGs are written (git-ignored) |
@@ -525,7 +526,7 @@ python -m app.main                          # same, run as a module
 ### `app.ui`
 
 A minimal web UI: one page with a seed field, a **Generate** button, a **peak-height slider**, a
-progress bar and the map, drawn as `app.main` draws it but with heights labelled in metres. It is
+**sea slider**, a progress bar and the map, drawn as `app.main` draws it but with heights labelled in metres. It is
 served by Python's standard-library HTTP server, so it needs no extra dependencies.
 
 **Heights in metres.** The terrain and sea level stay normalised (0–1) throughout; the UI only
@@ -538,6 +539,14 @@ is the slider value, so sea level scales with it: at 1000 m a sea level of 0.280
 map's numbers (colour-bar ticks in metres, sea-level marker, title) a moment after it settles. The
 picture itself doesn't change: the map sits in a fixed position in the figure, so it is
 pixel-identical for every slider value. Redrawn images are cached (cached ~15 ms, new ~0.4 s).
+
+**Sea slider.** Sets the share of the map that is sea, from 0% to `ui.sea_fraction_max` (95%),
+defaulting to `sea.water_fraction` (15%). Unlike the peak height it changes the terrain itself:
+sea level decides where rivers drain to and where sources may start, so it is sent with the
+Generate request and locked while a map is generating. Moving it after a map is finished shows a
+reminder that it applies to the next Generate. For seed 42: 15% gives 72 rivers, 50% gives 44,
+95% leaves a few islands with 3. At 0% there is no sea, so a wrap-around map has nowhere to drain
+to: draining and river carving are skipped (the summary says so).
 
 ```bash
 python app/ui.py                          # serve at http://localhost:9000 and open it in a browser
@@ -558,7 +567,7 @@ The seed must be a non-negative whole number. Endpoints:
 | Method and path | Description |
 |---|---|
 | `GET /` | The page |
-| `POST /api/generate` with `{"seed": <int>}` | Start a job; returns `{"job": <id>}` (409 if one is running, 400 for a bad seed) |
+| `POST /api/generate` with `{"seed": <int>, "sea_percent": <number>}` | Start a job (`sea_percent` optional, 0 to `ui.sea_fraction_max` × 100, default `sea.water_fraction` × 100); returns `{"job": <id>}` (409 if one is running, 400 for a bad seed or sea percentage) |
 | `GET /api/progress/<id>` | `{"fraction", "message", "done", "error", "info"}`; when done, `info` gives the normalised sea level and highest point, sea fraction and river counts |
 | `GET /api/image/<id>?peak=<m>` | The finished map as PNG, labelled with height 1.0 = `<m>` metres (default `ui.peak_height_m`, clamped to the slider range; 400 if not a number) |
 

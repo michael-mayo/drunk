@@ -110,6 +110,7 @@ class UiConfig:
     peak_height_m: float
     peak_height_min_m: float
     peak_height_step_m: float
+    sea_fraction_max: float
 
 
 @dataclass(frozen=True)
@@ -224,7 +225,10 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         peak_height_m=float(_require(ui_raw, "peak_height_m", "ui")),
         peak_height_min_m=float(_require(ui_raw, "peak_height_min_m", "ui")),
         peak_height_step_m=float(_require(ui_raw, "peak_height_step_m", "ui")),
+        sea_fraction_max=float(_require(ui_raw, "sea_fraction_max", "ui")),
     )
+    if not 0 <= sea.water_fraction <= ui.sea_fraction_max < 1:
+        raise ValueError("config needs 0 <= sea.water_fraction <= ui.sea_fraction_max < 1")
     if not 0 < ui.peak_height_min_m <= ui.peak_height_m <= cs2.max_height_m:
         raise ValueError("config needs 0 < ui.peak_height_min_m <= ui.peak_height_m <= cs2.max_height_m")
     paths_raw = _require(raw, "paths", "")

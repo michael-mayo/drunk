@@ -7,6 +7,11 @@ background thread through ``app.pipeline.generate_terrain``; the page polls
 for progress and shows the PNG when it is ready. One map is generated at a
 time.
 
+A sea slider (0 to ``ui.sea_fraction_max``, default ``sea.water_fraction``)
+sets the share of the map that is sea. It applies when Generate is pressed,
+since sea level decides where rivers drain to, so it is locked while a map
+is generating.
+
 Heights stay normalised (0-1) throughout; the slider only sets how they are
 labelled in Cities: Skylines II metres: 0.0 is 0 m and 1.0 is the slider's
 peak height (default ``ui.peak_height_m``, at most ``cs2.max_height_m``), so
@@ -17,8 +22,9 @@ Uses only the Python standard library's HTTP server, so it needs no extra
 dependencies. Endpoints:
 
 - ``GET /``: the page.
-- ``POST /api/generate`` with JSON ``{"seed": <int>}``: start a job; returns
-  ``{"job": <id>}`` (409 if a job is already running).
+- ``POST /api/generate`` with JSON ``{"seed": <int>, "sea_percent": <number>}``
+  (``sea_percent`` optional, 0 to ``ui.sea_fraction_max`` x 100): start a job;
+  returns ``{"job": <id>}`` (409 if a job is already running).
 - ``GET /api/progress/<id>``: ``{"fraction", "message", "done", "error",
   "info"}``; ``info`` (when done) gives the normalised sea level and highest
   point, the sea fraction and river counts.
@@ -38,6 +44,7 @@ import traceback
 import webbrowser
 from collections import OrderedDict
 from dataclasses import dataclass
+from dataclasses import replace
 from dataclasses import field as dataclass_field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -111,6 +118,12 @@ PAGE = """<!doctype html>
     <span id="peakValue"></span>
   </div>
   <div class="hint">Height 1.0 is shown as this many metres (0.0 is 0 m); Cities: Skylines II's full range is __PEAK_MAX__ m.</div>
+  <div class="scale">
+    <label for="sea">Sea</label>
+    <input id="sea" type="range" min="0" max="__SEA_MAX__" step="1" value="__SEA_DEFAULT__">
+    <span id="seaValue"></span>
+  </div>
+  <div class="hint" id="seaHint">Share of the map that is sea. Applies when you press Generate (rivers drain to the sea).</div>
   <progress id="bar" max="1" value="0"></progress>
   <div id="status">Enter a seed and press Generate.</div>
   <img id="map" alt="Generated terrain map" hidden>
@@ -120,16 +133,28 @@ const form = document.getElementById("form"), seedInput = document.getElementByI
 const go = document.getElementById("go"), bar = document.getElementById("bar");
 const statusLine = document.getElementById("status"), map = document.getElementById("map");
 const peak = document.getElementById("peak"), peakValue = document.getElementById("peakValue");
+const sea = document.getElementById("sea"), seaValue = document.getElementById("seaValue");
+const seaHint = document.getElementById("seaHint");
+const SEA_HINT = seaHint.textContent;
+let generatedSea = null;
 let currentJob = null, currentInfo = null, redrawTimer = null;
 
 const metres = (v) => Math.round(v).toLocaleString() + " m";
 function showPeak() { peakValue.textContent = metres(Number(peak.value)); }
+function showSea() {
+  seaValue.textContent = sea.value + "%";
+  seaHint.textContent = (generatedSea !== null && Number(sea.value) !== generatedSea)
+    ? `This map has ${generatedSea}% sea; press Generate to apply ${sea.value}%.` : SEA_HINT;
+}
+showSea();
+sea.addEventListener("input", showSea);
 function summary() {
   if (!currentInfo) return;
   const p = Number(peak.value), i = currentInfo;
   let text = `Seed ${i.seed}: sea level ${metres(i.sea_level * p)}, highest point ${metres(i.max_height * p)}, `
            + `${Math.round(i.sea_fraction * 100)}% sea`;
-  if (i.rivers !== null) text += `, ${i.rivers} rivers (${i.rivers_to_sea} reach the sea)`;
+  if (i.state === "no sea") text += ", no rivers (with no sea there is nowhere to drain to)";
+  else if (i.rivers !== null) text += `, ${i.rivers} rivers (${i.rivers_to_sea} reach the sea)`;
   statusLine.textContent = text;
 }
 function showMap() { map.src = `/api/image/${currentJob}?peak=${peak.value}`; map.hidden = false; }
@@ -146,36 +171,40 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const seed = parseInt(seedInput.value, 10);
   if (Number.isNaN(seed)) { statusLine.textContent = "The seed must be a whole number."; return; }
-  go.disabled = true; bar.value = 0; statusLine.textContent = "Starting…"; currentInfo = null;
+  go.disabled = true; sea.disabled = true; bar.value = 0; statusLine.textContent = "Starting…"; currentInfo = null;
+  const seaPercent = Number(sea.value);
   try {
     const response = await fetch("/api/generate", {
-      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({seed}),
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({seed, sea_percent: seaPercent}),
     });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || response.statusText);
-    poll(body.job, seed);
+    poll(body.job, seed, seaPercent);
   } catch (error) {
-    statusLine.textContent = "Could not start: " + error.message; go.disabled = false;
+    statusLine.textContent = "Could not start: " + error.message; go.disabled = false; sea.disabled = false;
   }
 });
 
-async function poll(job, seed) {
+function finish() { go.disabled = false; sea.disabled = false; }
+
+async function poll(job, seed, seaPercent) {
   try {
     const response = await fetch(`/api/progress/${job}`);
     const state = await response.json();
     bar.value = state.fraction;
     statusLine.textContent = state.message;
-    if (state.error) { statusLine.textContent = "Failed: " + state.error; go.disabled = false; return; }
+    if (state.error) { statusLine.textContent = "Failed: " + state.error; finish(); return; }
     if (state.done) {
-      currentJob = job; currentInfo = state.info;
+      currentJob = job; currentInfo = state.info; generatedSea = seaPercent;
       map.alt = `Generated terrain map for seed ${seed}`;
-      showMap(); summary();
-      go.disabled = false; return;
+      showMap(); summary(); showSea();
+      finish(); return;
     }
   } catch (error) {
-    statusLine.textContent = "Lost contact with the server: " + error.message; go.disabled = false; return;
+    statusLine.textContent = "Lost contact with the server: " + error.message; finish(); return;
   }
-  setTimeout(() => poll(job, seed), 300);
+  setTimeout(() => poll(job, seed, seaPercent), 300);
 }
 </script>
 </body>
@@ -188,6 +217,7 @@ class Job:
     """One generation request and its progress; updated by the worker thread, read by request handlers."""
 
     seed: int
+    water_fraction: float
     fraction: float = 0.0
     message: str = "queued"
     done: bool = False
@@ -215,6 +245,7 @@ class Job:
                     "max_height": float(r.field.max()),
                     "sea_fraction": r.sea_fraction,
                     "rivers": r.rivers_carved if r.state == "rivers" else None,
+                    "state": r.state,
                     "rivers_to_sea": r.rivers_to_sea,
                 }
             return {"fraction": self.fraction, "message": self.message, "done": self.done, "error": self.error,
@@ -258,19 +289,24 @@ class JobManager:
             .replace("__PEAK_MAX__", f"{config.cs2.max_height_m:g}")
             .replace("__PEAK_STEP__", f"{config.ui.peak_height_step_m:g}")
             .replace("__PEAK_DEFAULT__", f"{config.ui.peak_height_m:g}")
+            .replace("__SEA_MAX__", f"{round(config.ui.sea_fraction_max * 100):d}")
+            .replace("__SEA_DEFAULT__", f"{round(config.sea.water_fraction * 100):d}")
         )
         self.jobs: dict[int, Job] = {}
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
         self._running: Job | None = None
 
-    def start(self, seed: int) -> int | None:
-        """Start generating ``seed``; returns the job id, or None if a job is already running."""
+    def start(self, seed: int, water_fraction: float) -> int | None:
+        """Start generating ``seed`` with ``water_fraction`` of the map as sea.
+
+        Returns the job id, or None if a job is already running.
+        """
         with self._lock:
             if self._running is not None and not self._running.done:
                 return None
             job_id = next(self._ids)
-            job = Job(seed)
+            job = Job(seed, water_fraction)
             self.jobs[job_id] = job
             self._running = job
             for old in sorted(self.jobs)[: -self.KEEP]:
@@ -281,7 +317,9 @@ class JobManager:
     def _run(self, job: Job) -> None:
         """Worker thread: generate the terrain, render it to PNG bytes, and mark the job done."""
         try:
-            result = generate_terrain(self.config, job.seed, progress=lambda f, m: job.update(0.97 * f, m))
+            # The sea fraction is chosen per request; everything else comes from the config file.
+            config = replace(self.config, sea=replace(self.config.sea, water_fraction=job.water_fraction))
+            result = generate_terrain(config, job.seed, progress=lambda f, m: job.update(0.97 * f, m))
             job.update(0.97, "drawing the map")
             with job.lock:
                 job.result = result
@@ -358,14 +396,21 @@ def make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                seed = int(json.loads(self.rfile.read(length) or b"{}")["seed"])
-            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-                self._json(HTTPStatus.BAD_REQUEST, {"error": "expected JSON {\"seed\": <integer>}"})
+                request = json.loads(self.rfile.read(length) or b"{}")
+                seed = int(request["seed"])
+                sea_percent = float(request.get("sea_percent", manager.config.sea.water_fraction * 100))
+            except (ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST,
+                           {"error": "expected JSON {\"seed\": <integer>, \"sea_percent\": <number>}"})
                 return
             if seed < 0:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "the seed must not be negative"})
                 return
-            job_id = manager.start(seed)
+            max_percent = manager.config.ui.sea_fraction_max * 100
+            if not 0 <= sea_percent <= max_percent:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": f"sea_percent must be between 0 and {max_percent:g}"})
+                return
+            job_id = manager.start(seed, sea_percent / 100.0)
             if job_id is None:
                 self._json(HTTPStatus.CONFLICT, {"error": "a map is already being generated; please wait"})
             else:
