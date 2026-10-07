@@ -36,9 +36,7 @@ if not __package__:
 from app.config import Config
 from app.config import load_config
 from app.drainage import fill_hollows
-from app.layered_drunk import LayeredDrunk
-from app.layered_drunk import periodic_axis
-from app.pipeline import build_layer
+from app.pipeline import generate_height_field
 from app.rivers import carve_rivers
 from app.sea import sea_level
 from util.reference_terrain import square_crops
@@ -67,12 +65,7 @@ def cached_map(config: Config, seed: int) -> np.ndarray:
     path = CACHE_DIR / f"seed{seed}_{key}.npy"
     if path.exists():
         return np.load(path)
-    rng = np.random.default_rng(seed)
-    layers = [build_layer(config, scale, rng) for scale in config.layers.scales]
-    terrain = LayeredDrunk(layers, config.layers.scales, config.layers.h, max_workers=config.parallel.max_workers)
-    terrain.steps(config.walk.num_steps)
-    grid = periodic_axis(config.plot.domain, config.plot.grid_points)
-    field = terrain.density(grid, grid, config.plot.cutoff, period=config.plot.domain)
+    _, _, field = generate_height_field(config, seed)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     np.save(path, field)
     return field

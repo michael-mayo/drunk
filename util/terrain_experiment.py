@@ -22,6 +22,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numba
 import numpy as np
 import yaml
 from PIL import Image
@@ -30,7 +31,9 @@ from PIL import Image
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.deposits import deposit_field
 from app.drunk import Drunk
+from app.drunk import walk_drunks
 from app.sampling import poisson_disk_points
 from app.sampling import power_log_spacing
 from util.reference_terrain import square_crops
@@ -118,13 +121,13 @@ def build_drunks(params: dict[str, Any], rng: np.random.Generator) -> list[Drunk
 
 
 def layer_field(params: dict[str, Any], rng: np.random.Generator, domain: float, grid_points: int, cutoff: float) -> np.ndarray:
-    """Walk one composite's drunks and return their summed field on a ``grid_points`` grid over the domain."""
-    g = np.linspace(-domain / 2.0, domain / 2.0, grid_points)
-    field = np.zeros((grid_points, grid_points))
-    for drunk in build_drunks(params, rng):
-        drunk.steps(params["steps"])
-        field += drunk.density(g, g, cutoff)
-    return field
+    """Walk one composite's drunks and return their summed field on a ``grid_points`` grid over the domain.
+
+    The grid runs from ``-domain/2`` to ``domain/2`` inclusive and does not
+    wrap around: deposits beyond it are lost.
+    """
+    deposits = walk_drunks(build_drunks(params, rng), params["steps"])
+    return deposit_field(deposits, -domain / 2.0, domain / (grid_points - 1), grid_points, cutoff, periodic=False)
 
 
 def generate_map(params: dict[str, Any], seed: int, domain: float, grid_points: int, cutoff: float) -> np.ndarray:
@@ -161,6 +164,8 @@ def generate_map(params: dict[str, Any], seed: int, domain: float, grid_points: 
 def _map_task(args: tuple[str, int, dict[str, Any], int, float, int, float]) -> tuple[str, int, TerrainStats, np.ndarray]:
     """Worker: generate one map and its statistics; returns a thumbnail-sized copy for the contact sheet."""
     name, sample, params, seed, domain, grid_points, cutoff = args
+    # Maps already run in parallel processes, so each uses one thread.
+    numba.set_num_threads(1)
     field = generate_map(params, seed, domain, grid_points, cutoff)
     return name, sample, terrain_stats(field), field[::4, ::4]
 

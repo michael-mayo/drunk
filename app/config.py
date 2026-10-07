@@ -39,7 +39,8 @@ class CompositeConfig:
 class ParallelConfig:
     """Parallel-processing settings."""
 
-    max_workers: int | None
+    # Threads used by the numba kernels (None = every core).
+    threads: int | None
 
 
 @dataclass(frozen=True)
@@ -117,7 +118,6 @@ class UiConfig:
 class PathsConfig:
     """Filesystem locations used by the project."""
 
-    sample_images_dir: Path
     output_dir: Path
 
 
@@ -178,8 +178,10 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         kappa_max_power=float(_require(composite_raw, "kappa_max_power", "composite")),
     )
     parallel_raw = _require(raw, "parallel", "")
-    max_workers = _require(parallel_raw, "max_workers", "parallel")
-    parallel = ParallelConfig(max_workers=None if max_workers is None else int(max_workers))
+    threads = _require(parallel_raw, "threads", "parallel")
+    parallel = ParallelConfig(threads=None if threads is None else int(threads))
+    if parallel.threads is not None and parallel.threads < 1:
+        raise ValueError("config needs parallel.threads >= 1 (or null for every core)")
     walk_raw = _require(raw, "walk", "")
     walk = WalkConfig(
         num_steps=int(_require(walk_raw, "num_steps", "walk")),
@@ -198,6 +200,8 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         grid_points=int(_require(plot_raw, "grid_points", "plot")),
         cutoff=float(_require(plot_raw, "cutoff", "plot")),
     )
+    if not 0 < plot.cutoff < 1:
+        raise ValueError("config needs 0 < plot.cutoff < 1")
     sea_raw = _require(raw, "sea", "")
     sea = SeaConfig(water_fraction=float(_require(sea_raw, "water_fraction", "sea")))
     drainage_raw = _require(raw, "drainage", "")
@@ -233,7 +237,6 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         raise ValueError("config needs 0 < ui.peak_height_min_m <= ui.peak_height_m <= cs2.max_height_m")
     paths_raw = _require(raw, "paths", "")
     paths = PathsConfig(
-        sample_images_dir=_resolve(base_dir, _require(paths_raw, "sample_images_dir", "paths")),
         output_dir=_resolve(base_dir, _require(paths_raw, "output_dir", "paths")),
     )
     return Config(

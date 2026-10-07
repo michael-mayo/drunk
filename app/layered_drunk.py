@@ -1,51 +1,12 @@
 """Multi-scale terrain: composites of drunks at several scales, combined into one height field."""
 
-import os
+import math
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor
-from concurrent.futures import as_completed
-from pathlib import Path
 
+import numba
 import numpy as np
 
 from app.composite_drunk import CompositeDrunk
-from app.drunk import Drunk
-from app.rendering import save_heatmap
-
-
-def _density_sum(
-    drunks: list[Drunk],
-    gx: np.ndarray,
-    gy: np.ndarray,
-    cutoff: float,
-    period: float | None = None,
-) -> np.ndarray:
-    """Worker: summed deposits of a batch of ``drunks`` on the grid ``gx`` x ``gy`` (runs in a child process).
-
-    Returning one field per batch, rather than per drunk, keeps the data sent
-    back to the parent small however many drunks there are.
-    """
-    field = np.zeros((len(gy), len(gx)))
-    for drunk in drunks:
-        field += drunk.density(gx, gy, cutoff, period)
-    return field
-
-
-def _resample(
-    field: np.ndarray,
-    src_x: np.ndarray,
-    src_y: np.ndarray,
-    dst_x: np.ndarray,
-    dst_y: np.ndarray,
-    period: float | None = None,
-) -> np.ndarray:
-    """Bilinearly resample ``field`` (shape ``(len(src_y), len(src_x))``) onto the grid ``dst_x`` x ``dst_y``.
-
-    With ``period``, interpolation wraps around, so points past the last
-    source sample blend back into the first.
-    """
-    rows = np.array([np.interp(dst_x, src_x, row, period=period) for row in field])
-    return np.array([np.interp(dst_y, src_y, col, period=period) for col in rows.T]).T
 
 
 def periodic_axis(domain: float, points: int) -> np.ndarray:
@@ -54,6 +15,33 @@ def periodic_axis(domain: float, points: int) -> np.ndarray:
     The far edge is left out because it is the same line as the near edge.
     """
     return -domain / 2.0 + domain * np.arange(points) / points
+
+
+@numba.njit(parallel=True, cache=True)
+def _resample_periodic(field: np.ndarray, n: int) -> np.ndarray:
+    """Bilinearly resample the wrap-around square grid ``field`` onto an ``n`` x ``n`` grid over the same area.
+
+    Both grids start at the same corner and leave out the far edge, so points
+    past the last source sample blend back into the first.
+    """
+    m = field.shape[0]
+    ratio = m / n
+    out = np.empty((n, n))
+    for i in numba.prange(n):
+        fy = i * ratio
+        y0 = int(math.floor(fy))
+        wy = fy - y0
+        y0 %= m
+        y1 = (y0 + 1) % m
+        for j in range(n):
+            fx = j * ratio
+            x0 = int(math.floor(fx))
+            wx = fx - x0
+            x0 %= m
+            x1 = (x0 + 1) % m
+            out[i, j] = ((field[y0, x0] * (1.0 - wx) + field[y0, x1] * wx) * (1.0 - wy)
+                         + (field[y1, x0] * (1.0 - wx) + field[y1, x1] * wx) * wy)
+    return out
 
 
 class LayeredDrunk:
@@ -74,20 +62,13 @@ class LayeredDrunk:
 
     A layer at scale ``s`` is ``s / s_min`` times smoother than the finest, so
     it is evaluated on a grid that much coarser and resampled bilinearly,
-    which keeps coarse layers as cheap as fine ones.
-
-    ``to_png`` renders a wrap-around map: deposits leaving one edge re-enter at
-    the opposite one, so every point has neighbours on all sides (no thinning
-    towards the edges), all deposits land on the map, and the map tiles
-    seamlessly. Drunks' homes should then be sampled inside the map.
+    which keeps coarse layers as cheap as fine ones. The map wraps around:
+    deposits leaving one edge re-enter at the opposite one, so the map tiles
+    seamlessly. Drunks' homes should be sampled inside the map.
     """
 
-    def __init__(self, layers: list[CompositeDrunk], scales: list[float], h: float, max_workers: int | None = None) -> None:
-        """Combine ``layers`` (one composite per entry of ``scales``) with weighting exponent ``h``.
-
-        ``max_workers`` caps the process pool used to evaluate the layers;
-        ``None`` uses one worker per CPU.
-        """
+    def __init__(self, layers: list[CompositeDrunk], scales: list[float], h: float) -> None:
+        """Combine ``layers`` (one composite per entry of ``scales``) with weighting exponent ``h``."""
         if not layers or len(layers) != len(scales):
             raise ValueError("LayeredDrunk needs one or more layers, one per scale")
         if min(scales) <= 0:
@@ -95,106 +76,66 @@ class LayeredDrunk:
         self.layers = list(layers)
         self.scales = [float(s) for s in scales]
         self.h = h
-        self.max_workers = max_workers
 
     @property
     def num_steps(self) -> int:
         """Number of steps each drunk has taken."""
         return self.layers[0].num_steps
 
-    def steps(self, n: int = 100, progress: Callable[[float, str], None] | None = None) -> None:
-        """Advance every drunk in every layer by ``n`` steps (each layer's members in parallel).
+    def walk(self, num_steps: int, progress: Callable[[float, str], None] | None = None) -> None:
+        """Walk every drunk in every layer ``num_steps`` steps.
 
         ``progress``, if given, is called after each layer with the fraction
         of layers done and a short message.
         """
         for i, (layer, scale) in enumerate(zip(self.layers, self.scales)):
-            layer.steps(n)
+            layer.walk(num_steps)
             if progress is not None:
                 progress((i + 1) / len(self.layers), f"walked layer {i + 1} of {len(self.layers)} (scale {scale:g})")
 
-    def _layer_grid(
+    def layer_grid_points(self, scale: float, grid_points: int) -> int:
+        """Points per side of the coarser grid on which the layer at ``scale`` is evaluated."""
+        return max(16, round(grid_points / (scale / min(self.scales))))
+
+    def layer_fields(
         self,
-        scale: float,
-        gx: np.ndarray,
-        gy: np.ndarray,
-        period: float | None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """The coarser grid, over the same area as ``gx`` x ``gy``, on which a layer at ``scale`` is evaluated."""
-        factor = scale / min(self.scales)
-        nx = max(16, round(len(gx) / factor))
-        ny = max(16, round(len(gy) / factor))
-        if period is not None:
-            return gx[0] + period * np.arange(nx) / nx, gy[0] + period * np.arange(ny) / ny
-        return np.linspace(gx[0], gx[-1], nx), np.linspace(gy[0], gy[-1], ny)
+        domain: float,
+        grid_points: int,
+        cutoff: float,
+        progress: Callable[[float, str], None] | None = None,
+    ) -> list[np.ndarray]:
+        """Each layer's weighted contribution to the height field, on a ``grid_points`` x ``grid_points`` wrap-around grid.
+
+        Layer ``j`` is evaluated on its coarser grid, resampled, scaled to
+        unit standard deviation and weighted by ``(s_j / s_min) ** h``; the
+        height field is their sum. ``progress``, if given, is called after
+        each layer with the fraction of layers done and a message.
+        """
+        fields = []
+        for i, (layer, scale) in enumerate(zip(self.layers, self.scales)):
+            coarse = layer.density(domain, self.layer_grid_points(scale, grid_points), cutoff)
+            field = _resample_periodic(coarse, grid_points)
+            sd = field.std()
+            fields.append((scale / min(self.scales)) ** self.h * field / sd if sd > 0 else np.zeros_like(field))
+            if progress is not None:
+                progress((i + 1) / len(self.layers), f"evaluated layer {i + 1} of {len(self.layers)} (scale {scale:g})")
+        return fields
 
     def density(
         self,
-        gx: np.ndarray,
-        gy: np.ndarray,
-        cutoff: float = 1 / 4096,
-        period: float | None = None,
+        domain: float,
+        grid_points: int,
+        cutoff: float,
         progress: Callable[[float, str], None] | None = None,
     ) -> np.ndarray:
-        """The combined height field on the grid ``gx`` x ``gy``, scaled to [0, 1].
+        """The combined height field on a ``grid_points`` x ``grid_points`` wrap-around grid, scaled to [0, 1].
 
-        With ``period``, the grid is one tile of a wrap-around map (see
-        ``periodic_axis``). Every layer's drunks are evaluated in parallel, in
-        batches. Batches are summed per layer in the parent in a fixed order,
-        so the result is deterministic. ``progress``, if given, is called as
-        each batch finishes with the fraction of batches done and a message.
+        The grid covers the square of side ``domain`` centred on the origin
+        once (see ``periodic_axis``). ``progress`` is passed to ``layer_fields``.
         """
-        workers = self.max_workers or os.process_cpu_count() or 1
-        tasks = []
-        for j, (layer, scale) in enumerate(zip(self.layers, self.scales)):
-            lx, ly = self._layer_grid(scale, gx, gy, period)
-            for batch in np.array_split(np.arange(len(layer.drunks)), workers):
-                if len(batch):
-                    tasks.append((j, [layer.drunks[i] for i in batch], lx, ly))
-        fields: list[np.ndarray | None] = [None] * len(tasks)
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(_density_sum, d, lx, ly, cutoff, period): i for i, (_, d, lx, ly) in enumerate(tasks)
-            }
-            # Collect as batches finish (for progress), but keep each result in its task slot
-            # so the per-layer sums below run in a fixed order.
-            for done, future in enumerate(as_completed(futures), start=1):
-                fields[futures[future]] = future.result()
-                if progress is not None:
-                    progress(done / len(tasks), f"evaluated {done} of {len(tasks)} batches of deposits")
-
-        sums: dict[int, np.ndarray] = {}
-        for (j, _, _, _), f in zip(tasks, fields):
-            sums[j] = sums[j] + f if j in sums else f
-        total = np.zeros((len(gy), len(gx)))
-        for j, scale in enumerate(self.scales):
-            lx, ly = self._layer_grid(scale, gx, gy, period)
-            layer = _resample(sums[j], lx, ly, gx, gy, period)
-            sd = layer.std()
-            if sd > 0:
-                total += (scale / min(self.scales)) ** self.h * layer / sd
+        total = np.sum(self.layer_fields(domain, grid_points, cutoff, progress), axis=0)
         lo, hi = total.min(), total.max()
         return (total - lo) / (hi - lo) if hi > lo else np.zeros_like(total)
-
-    def to_png(
-        self,
-        filename: Path | str,
-        domain: float,
-        grid_points: int = 400,
-        cutoff: float = 1 / 4096,
-        label: str = "",
-    ) -> None:
-        """Save a heatmap of the wrap-around map: the square of side ``domain`` centred on the origin.
-
-        ``label``, if given, is prefixed to the title (e.g. the map's seed).
-        """
-        g = periodic_axis(domain, grid_points)
-        field = self.density(g, g, cutoff, period=domain)
-        n = sum(len(layer.drunks) for layer in self.layers)
-        title = f"LayeredDrunk: {len(self.layers)} layers, {n} drunks, {self.num_steps} steps each"
-        if label:
-            title = f"{label}: {title}"
-        save_heatmap(filename, field, g, g, title, label="normalised height")
 
     def __str__(self) -> str:
         """Summary of the layered field and of each layer."""

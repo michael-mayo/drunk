@@ -1,4 +1,4 @@
-"""Render summed Gaussian-deposit fields as heatmap PNGs."""
+"""Render height fields as terrain-map PNGs: sea, land and rivers."""
 
 from pathlib import Path
 from typing import BinaryIO
@@ -13,53 +13,7 @@ from matplotlib.colors import ListedColormap
 from matplotlib.ticker import MaxNLocator
 
 
-def square_grid(points: np.ndarray, margin: float, grid_points: int) -> tuple[np.ndarray, np.ndarray]:
-    """Return 1D x and y axes of a square grid covering ``points`` (shape (N, 2)) plus ``margin``.
-
-    The grid is square so the rendered image isn't distorted.
-    """
-    lo = points.min(axis=0)
-    hi = points.max(axis=0)
-    cx, cy = (lo + hi) / 2
-    half = (hi - lo).max() / 2 + margin
-    gx = np.linspace(cx - half, cx + half, grid_points)
-    gy = np.linspace(cy - half, cy + half, grid_points)
-    return gx, gy
-
-
-def save_heatmap(
-    filename: Path | str,
-    field: np.ndarray,
-    gx: np.ndarray,
-    gy: np.ndarray,
-    title: str,
-    label: str = "summed deposit amplitude",
-) -> None:
-    """Save ``field`` (sampled on ``gx`` x ``gy``) as a heatmap, with ``label`` on the colour bar.
-
-    Parent folders are created if needed.
-    """
-    path = Path(filename)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    fig, ax = plt.subplots(figsize=(7, 6))
-    image = ax.imshow(
-        field,
-        origin="lower",
-        extent=(gx[0], gx[-1], gy[0], gy[-1]),
-        cmap="magma",
-        interpolation="bilinear",
-    )
-    fig.colorbar(image, ax=ax, label=label)
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_title(title)
-    fig.tight_layout()
-    fig.savefig(path, dpi=100)
-    plt.close(fig)
-
-
-def _sea_and_land_colormap(sea_level: float, vmin: float, vmax: float, n: int = 512) -> ListedColormap:
+def sea_and_land_colormap(sea_level: float, vmin: float, vmax: float, n: int = 512) -> ListedColormap:
     """Colour map over ``[vmin, vmax]`` with blues below ``sea_level`` and terrain colours above.
 
     Sea gets darker with depth; land runs from lowland green up through brown
@@ -73,7 +27,7 @@ def _sea_and_land_colormap(sea_level: float, vmin: float, vmax: float, n: int = 
     return ListedColormap(np.vstack([sea, land]))
 
 
-def _draw_rivers(ax: plt.Axes, area: np.ndarray, gx: np.ndarray, gy: np.ndarray) -> None:
+def draw_rivers(ax: plt.Axes, area: np.ndarray, gx: np.ndarray, gy: np.ndarray) -> None:
     """Draw river cells as light-blue dots sized and shaded by log catchment area (larger rivers on top)."""
     iy, ix = np.nonzero(area > 0)
     a = np.log(area[iy, ix])
@@ -128,14 +82,14 @@ def save_terrain_map(
         field,
         origin="lower",
         extent=extent,
-        cmap=_sea_and_land_colormap(sea_level, vmin, vmax),
+        cmap=sea_and_land_colormap(sea_level, vmin, vmax),
         vmin=vmin,
         vmax=vmax,
         interpolation="bilinear",
     )
     ax.contour(field, levels=[sea_level], colors="navy", linewidths=0.5, origin="lower", extent=extent)
     if rivers is not None and np.any(rivers > 0):
-        _draw_rivers(ax, rivers, gx, gy)
+        draw_rivers(ax, rivers, gx, gy)
     if height_scale_m is None:
         bar = fig.colorbar(image, cax=cax, label="normalised height")
         sea_label = "sea level"

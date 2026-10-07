@@ -33,9 +33,9 @@ composite:
   kappa_max_power: 4.0
 
 parallel:
-  # Maximum worker processes used to run a composite's member drunks in
-  # parallel (null = one per CPU, never more than the number of members).
-  max_workers: null
+  # Threads used by the compiled (numba) walking and deposit kernels
+  # (null = every core). Results are identical whatever the number.
+  threads: null
 
 walk:
   # Number of steps each drunk takes.
@@ -73,7 +73,7 @@ plot:
   # Each Gaussian is only evaluated where it exceeds cutoff x its peak, i.e.
   # within sqrt(2 ln(1/cutoff)) standard deviations of its centre (~4.08 sd
   # for 1/4096). Skipping the negligible tails makes rendering much faster.
-  # 0 = evaluate every Gaussian over the whole grid (exact, slow).
+  # Must be in (0, 1).
   cutoff: 0.000244140625  # 1/4096
 
 sea:
@@ -141,7 +141,5 @@ ui:
   sea_fraction_max: 0.95
 
 paths:
-  # Folder of sample input images.
-  sample_images_dir: sample_images
   # Folder where generated outputs are written (created if missing).
   output_dir: output
