@@ -28,12 +28,9 @@ Each map is a Cities: Skylines II **world map, 57.344 km** on a side, with the *
 14.336 km** on a side, outlined in white at its centre. In CS2 a heightmap is 4096 × 4096 pixels
 covering the playable area (3.5 m per pixel), and the optional world map is another 4096 × 4096
 image four times wider (14 m per pixel) whose central 1024 × 1024 pixels are the playable area. In
-the web UI you choose where the playable area goes by clicking on the world map. Heights are
-normalised (0–1); the web UI labels them in metres.
-
-> **Not yet included:** export to Cities: Skylines II's 4096 × 4096 16-bit heightmap format. The
-> current output is a 1600 × 1600 world map (400 × 400 for the playable area) drawn as an annotated
-> PNG.
+the web UI you choose where the playable area goes by clicking on the world map, set the peak
+height, and press **Export heightmaps** to download both files, ready for the CS2 map editor.
+Heights are normalised (0–1) until export, where height 1.0 becomes the chosen peak height.
 
 ## Quick start
 
@@ -134,10 +131,54 @@ browser). Then:
    again as often as you like; the status line gives the playable area's centre in km of the
    generated world.
 4. Move the **Peak height** slider to choose how many metres the highest point represents. This
-   only relabels the colour bar and summary in metres; the map itself doesn't change.
+   relabels the colour bar and summary in metres (the picture doesn't change) and sets the heights
+   in the export.
+5. Press **Export heightmaps.** After a few seconds the browser downloads two files for the
+   current view (see [Exporting to Cities: Skylines II](#exporting-to-cities-skylines-ii)):
+   `drunk_seed<seed>_sea<%>_x<col>_y<row>_peak<m>m_world.png` and `…_playable.png`. Your browser
+   may ask once whether to allow the site to download multiple files.
 
 Moving the Sea slider after a map is drawn has no effect until you press Generate again, because
 sea level decides where the rivers run. Stop the server with Ctrl+C.
+
+### Exporting to Cities: Skylines II
+
+The map editor imports two heightmaps, both **4096 × 4096 pixels, 16-bit greyscale** (PNG, TIFF
+or RAW), with values 0–65535 spanning 0–4096 m at the editor's default height scale:
+
+| File | Covers | Pixel size | Exported as |
+|---|---|---|---|
+| Heightmap (playable area) | 14.336 km | 3.5 m | `…_playable.png` |
+| World map (optional) | 57.344 km, the playable area as its central 1024 × 1024 pixels | 14 m | `…_world.png` |
+
+Copy both into `%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\Heightmaps\`
+and import them in the editor. Then set the editor's sea level to the exported **sea level in
+metres**, given in the file's metadata (`sea_level_m`; the UI's status line shows it too).
+
+What the export does (`app/export.py`):
+
+- **Re-centres** the world on the playable area you picked (`TerrainResult.centred_on`), so the
+  playable area is the world map's centre, as the game requires. The two files match: the world
+  map's centre equals the playable heightmap shrunk four times (to within about 0.03 m).
+- **Resamples** the 1600 × 1600 grid to 4096 × 4096 with cubic interpolation (the playable area's
+  400 × 400 cells become 4096 × 4096). The finest deposits are about two cells wide, so the grid
+  already holds all the terrain's detail; cubic resampling fills in smooth values instead of the
+  kinks bilinear resampling would put in every slope.
+- **Scales** normalised height 1.0 to the peak height and stores metres as `metres / 4096 × 65535`
+  (one step ≈ 6 cm), with north at the top.
+- **Tags** both files with everything needed to reproduce them, in the file name and in a
+  `drunk` PNG text chunk: seed, sea share, centre cell, grid size, peak height, sea level in metres
+  and which map it is. Regenerate with the same seed and sea share, click the same centre (or
+  request it directly, see the endpoints under [`app.ui`](#appui-web-ui)) and export at the same
+  peak height to get identical files.
+
+Exporting takes about 3.5 s (mostly PNG compression); the files are about 17 MB (world) and 8 MB
+(playable).
+
+**Known limitation:** the drainage fill leaves a gradient of 10⁻⁶ across filled hollows, far
+below one 16-bit step, so filled hollows export as flat ground, and rounding and cubic resampling
+leave shallow pits: about 3% of exported land, a median of 3 steps (≈ 0.2 m) deep and at most about
+2 m. In the game these can hold puddles after rain.
 
 ### Run the tests
 
@@ -480,6 +521,7 @@ Endpoints (for scripting):
 | `GET /` | The page |
 | `POST /api/generate` with `{"seed": <int>, "sea_percent": <number>}` | Start a job (`sea_percent` optional, 0 to `ui.sea_fraction_max` × 100); returns `{"job": <id>}`, 409 if one is running, 400 for a bad seed or sea percentage |
 | `GET /api/progress/<id>` | `{"fraction", "message", "done", "error", "info"}`; when done, `info` gives the sea level, highest point, sea fraction, river counts and `grid_points` |
+| `GET /api/export/<id>?kind=<world\|playable>&peak=<m>&cx=<col>&cy=<row>` | That view's CS2 heightmap as a download (4096 × 4096 16-bit PNG named after its settings); both are made on the first request and cached |
 | `GET /api/image/<id>?peak=<m>&cx=<col>&cy=<row>` | The finished world map as PNG, labelled with height 1.0 = `<m>` metres, rolled so grid cell (`cx`, `cy`) is at the centre inside the outlined playable area (default: the middle cell; 400 if outside the grid) |
 
 ### `util/readme_figures.py`: README figures
@@ -607,6 +649,7 @@ result.river_area   # catchment area of each river cell (0 elsewhere)
 | Name | Module | Description |
 |---|---|---|
 | `generate_terrain(config, seed, progress=None)` | `app.pipeline` | The whole pipeline; returns a `TerrainResult` (field, sea level, rivers, state); `.centred_on(cx, cy)` rolls it so a cell is at the centre |
+| `export_heightmaps(result, config, sea_percent, cx, cy, peak_m)` | `app.export` | The world map and playable-area heightmaps (4096 × 4096 16-bit PNGs, as `ExportFile(filename, png)`) for a view |
 | `playable_crop(config, field)` | `app.pipeline` | The central playable area of a world-map field (400 × 400 of 1600 × 1600) |
 | `generate_height_field(config, seed, progress=None)` | `app.pipeline` | Only the raw height field: returns `(LayeredDrunk, field)` |
 | `build_layer(config, layer, rng)` | `app.pipeline` | The `CompositeDrunk` for one `LayerConfig` (an entry of `config.layers`) |
@@ -636,6 +679,7 @@ The tests (`tests/`) use small maps and run in about a second:
 | `test_drunk.py` | A walk depends only on its own seed; steps have the right length; deposit shapes and amplitudes are as configured; homeward bias keeps drunks closer to home; out-of-range seeds are refused |
 | `test_terrain.py` | Resampling, Poisson-disk spacing, power-log spacing, sea fraction; hollow filling only raises cells and makes every cell drain (wrap-around and cut-out grids); river carving drains and is reproducible; the whole pipeline is reproducible, in [0, 1], has the requested sea and drains; re-centring moves the chosen cell to the centre and keeps every height and river |
 | `test_config.py` | The shipped config loads; a missing setting is named in the error; out-of-range values are refused |
+| `test_export.py` | Both heightmaps are square 16-bit greyscale PNGs (4096 × 4096 in the game's format), named and tagged with their settings; heights map to metres correctly; the world map's centre matches the playable heightmap; north is at the top |
 | `test_rendering.py` | A terrain map is saved as a PNG spanning 0 to the world width on both axes, labelled in km, with the map exactly at `MAP_RECT` (which the UI relies on to turn clicks into map positions) and the playable area outlined at the centre |
 
 "Drains" is checked strictly: every land cell must have a strictly lower neighbour, so following
@@ -775,7 +819,8 @@ drunk/
 │   ├── sea.py               # Sea level from the share of the map that is sea
 │   ├── drainage.py          # Hollow filling and D8 flow routing (numba)
 │   ├── rivers.py            # River drunks: walk the drainage, carve graded valleys (numba)
-│   └── rendering.py         # Terrain-map PNGs (axes in km, heights optionally in m)
+│   ├── rendering.py         # Terrain-map PNGs (axes in km, heights optionally in m)
+│   └── export.py            # CS2 heightmap export: world map and playable area, 4096² 16-bit PNGs
 ├── tests/                   # pytest suite
 ├── util/                    # Standalone tools
 │   ├── readme_figures.py            # Draws the README's explanatory figures

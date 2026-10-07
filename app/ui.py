@@ -34,6 +34,9 @@ dependencies. Endpoints:
 - ``GET /api/progress/<id>``: ``{"fraction", "message", "done", "error",
   "info"}``; ``info`` (when done) gives the normalised sea level and highest
   point, the sea fraction and river counts.
+- ``GET /api/export/<id>?kind=<world|playable>&peak=<m>&cx=<col>&cy=<row>``:
+  a Cities: Skylines II heightmap (4096 x 4096, 16-bit PNG, ``app.export``)
+  for that view, sent as a download named after its settings.
 - ``GET /api/image/<id>?peak=<m>&cx=<col>&cy=<row>``: the finished map as
   PNG, labelled with 1.0 = ``<m>`` metres (default ``ui.peak_height_m``),
   rolled so grid cell ``(cx, cy)`` is at the centre (default: the middle cell).
@@ -68,6 +71,8 @@ if not __package__:
 from app.config import DEFAULT_CONFIG_PATH
 from app.config import Config
 from app.config import load_config
+from app.export import ExportFile
+from app.export import export_heightmaps
 from app.pipeline import TerrainResult
 from app.pipeline import generate_terrain
 from app.rendering import MAP_RECT
@@ -126,6 +131,7 @@ PAGE = """<!doctype html>
     <label for="seed">Seed</label>
     <input id="seed" type="number" step="1" value="42" required>
     <button id="go" type="submit">Generate</button>
+    <button id="export" type="button" disabled>Export heightmaps</button>
   </form>
   <div class="scale">
     <label for="peak">Peak height</label>
@@ -143,7 +149,9 @@ PAGE = """<!doctype html>
   <div id="status">Enter a seed and press Generate.</div>
   <div class="hint" id="pickHint" hidden>The white square is the playable area (__PLAYABLE_KM__ km) at the centre
     of the __WORLD_KM__ km world map. Click anywhere to move it there: the world wraps around, so the map
-    re-centres on your point.</div>
+    re-centres on your point. <b>Export heightmaps</b> downloads the Cities: Skylines II world map and
+    playable-area heightmap (4096 x 4096, 16-bit) for this view, with height 1.0 at the peak height above;
+    both file names record the seed, sea share, centre and peak height.</div>
   <div class="mapwrap" id="mapwrap" hidden>
     <img id="map" alt="Generated terrain map">
     <div id="preview" hidden></div>
@@ -152,6 +160,7 @@ PAGE = """<!doctype html>
 <script>
 const form = document.getElementById("form"), seedInput = document.getElementById("seed");
 const go = document.getElementById("go"), bar = document.getElementById("bar");
+const exportButton = document.getElementById("export");
 const statusLine = document.getElementById("status"), map = document.getElementById("map");
 const peak = document.getElementById("peak"), peakValue = document.getElementById("peakValue");
 const sea = document.getElementById("sea"), seaValue = document.getElementById("seaValue");
@@ -233,7 +242,8 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const seed = parseInt(seedInput.value, 10);
   if (Number.isNaN(seed)) { statusLine.textContent = "The seed must be a whole number."; return; }
-  go.disabled = true; sea.disabled = true; bar.value = 0; statusLine.textContent = "Starting…"; currentInfo = null;
+  go.disabled = true; sea.disabled = true; exportButton.disabled = true;
+  bar.value = 0; statusLine.textContent = "Starting…"; currentInfo = null;
   const seaPercent = Number(sea.value);
   try {
     const response = await fetch("/api/generate", {
@@ -250,6 +260,32 @@ form.addEventListener("submit", async (event) => {
 
 function finish() { go.disabled = false; sea.disabled = false; }
 
+// Download the world map and playable-area heightmaps for the current view. The server makes both
+// on the first request (a few seconds); the second download follows once the first has arrived.
+exportButton.addEventListener("click", async () => {
+  if (!currentInfo) return;
+  exportButton.disabled = true;
+  const query = `peak=${peak.value}&cx=${centre[0]}&cy=${centre[1]}`;
+  try {
+    for (const kind of ["world", "playable"]) {
+      statusLine.textContent = `Preparing the ${kind} heightmap…`;
+      const response = await fetch(`/api/export/${currentJob}?kind=${kind}&${query}`);
+      if (!response.ok) throw new Error((await response.json()).error || response.statusText);
+      const name = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition"))[1];
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(await response.blob());
+      link.download = name;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    }
+    summary();
+    statusLine.textContent += " Exported both heightmaps.";
+  } catch (error) {
+    statusLine.textContent = "Export failed: " + error.message;
+  }
+  exportButton.disabled = false;
+});
+
 async function poll(job, seed, seaPercent) {
   try {
     const response = await fetch(`/api/progress/${job}`);
@@ -261,7 +297,7 @@ async function poll(job, seed, seaPercent) {
       currentJob = job; currentInfo = state.info; generatedSea = seaPercent;
       centre = [Math.floor(state.info.grid_points / 2), Math.floor(state.info.grid_points / 2)];
       map.alt = `Generated terrain map for seed ${seed}`;
-      showMap(); summary(); showSea();
+      showMap(); summary(); showSea(); exportButton.disabled = false;
       finish(); return;
     }
   } catch (error) {
@@ -292,6 +328,9 @@ class Job:
     # Rendered PNGs keyed by (peak height in m, centre column, centre row), most recently used last.
     images: OrderedDict = dataclass_field(default_factory=OrderedDict)
     lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
+    # The last exported heightmaps and the (peak, cx, cy) they were made for, and the lock that guards them.
+    exported: tuple[tuple[float, int, int], tuple[ExportFile, ExportFile]] | None = None
+    export_lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
 
     def update(self, fraction: float, message: str) -> None:
         """Record progress (called from the worker thread)."""
@@ -345,6 +384,23 @@ class Job:
             while len(self.images) > IMAGE_CACHE_SIZE:
                 self.images.popitem(last=False)
         return png
+
+    def export(self, config: Config, peak_m: float, cx: int, cy: int) -> tuple[ExportFile, ExportFile]:
+        """The world and playable-area heightmaps centred on cell ``(cx, cy)`` with height 1.0 = ``peak_m`` m (cached).
+
+        Both are made together and kept for the most recent settings, so the
+        page's second download is instant; the export lock stops two requests
+        making them twice.
+        """
+        key = (round(peak_m, 3), cx, cy)
+        with self.export_lock:
+            if self.exported is None or self.exported[0] != key:
+                with self.lock:
+                    r = self.result
+                if r is None:
+                    raise ValueError("the map isn't finished")
+                self.exported = (key, export_heightmaps(r, config, round(self.water_fraction * 100, 3), cx, cy, peak_m))
+            return self.exported[1]
 
 
 class JobManager:
@@ -415,11 +471,13 @@ def make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         """Serves the page and the JSON/PNG API."""
 
-        def _send(self, status: HTTPStatus, body: bytes, content_type: str) -> None:
-            """Send a complete response."""
+        def _send(self, status: HTTPStatus, body: bytes, content_type: str, download: str | None = None) -> None:
+            """Send a complete response; with ``download``, as a file the browser saves under that name."""
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            if download is not None:
+                self.send_header("Content-Disposition", f'attachment; filename="{download}"')
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
@@ -438,8 +496,36 @@ def make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "no such job"})
             return job
 
+        def _view(self, job: Job) -> tuple[float, int, int] | None:
+            """The ``(peak_m, cx, cy)`` asked for by the query (peak height, centre cell), or None (and an error sent).
+
+            The peak height defaults to ``ui.peak_height_m`` and is kept within
+            the slider's range; the centre defaults to the middle cell.
+            """
+            ui = manager.config.ui
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                peak_m = float(query.get("peak", [ui.peak_height_m])[0])
+            except ValueError:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "peak must be a number of metres"})
+                return None
+            peak_m = min(max(peak_m, ui.peak_height_min_m), manager.config.cs2.max_height_m)
+            if job.result is None:
+                self._json(HTTPStatus.CONFLICT, {"error": "not finished"})
+                return None
+            n = job.result.field.shape[0]
+            try:
+                cx = int(query.get("cx", [n // 2])[0])
+                cy = int(query.get("cy", [n // 2])[0])
+            except ValueError:
+                cx = cy = -1
+            if not (0 <= cx < n and 0 <= cy < n):
+                self._json(HTTPStatus.BAD_REQUEST, {"error": f"cx and cy must be whole numbers from 0 to {n - 1}"})
+                return None
+            return peak_m, cx, cy
+
         def do_GET(self) -> None:
-            """Serve the page, job progress, or a finished image."""
+            """Serve the page, job progress, a finished image, or an exported heightmap."""
             if self.path in ("/", "/index.html"):
                 self._send(HTTPStatus.OK, manager.page.encode(), "text/html; charset=utf-8")
             elif self.path.startswith("/api/progress/"):
@@ -448,29 +534,21 @@ def make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
                     self._json(HTTPStatus.OK, job.snapshot())
             elif self.path.startswith("/api/image/"):
                 job = self._job("/api/image/")
-                if job is not None:
-                    ui = manager.config.ui
-                    try:
-                        query = parse_qs(urlparse(self.path).query)
-                        peak_m = float(query.get("peak", [ui.peak_height_m])[0])
-                    except ValueError:
-                        self._json(HTTPStatus.BAD_REQUEST, {"error": "peak must be a number of metres"})
-                        return
-                    # Keep the label scale within the slider's range.
-                    peak_m = min(max(peak_m, ui.peak_height_min_m), manager.config.cs2.max_height_m)
-                    if job.result is None:
-                        self._json(HTTPStatus.CONFLICT, {"error": "not finished"})
-                        return
-                    n = job.result.field.shape[0]
-                    try:
-                        cx = int(query.get("cx", [n // 2])[0])
-                        cy = int(query.get("cy", [n // 2])[0])
-                    except ValueError:
-                        cx = cy = -1
-                    if not (0 <= cx < n and 0 <= cy < n):
-                        self._json(HTTPStatus.BAD_REQUEST, {"error": f"cx and cy must be whole numbers from 0 to {n - 1}"})
-                        return
-                    self._send(HTTPStatus.OK, job.image(peak_m, cx, cy), "image/png")
+                view = self._view(job) if job is not None else None
+                if view is not None:
+                    self._send(HTTPStatus.OK, job.image(*view), "image/png")
+            elif self.path.startswith("/api/export/"):
+                job = self._job("/api/export/")
+                view = self._view(job) if job is not None else None
+                if view is None:
+                    return
+                kind = parse_qs(urlparse(self.path).query).get("kind", [""])[0]
+                if kind not in ("world", "playable"):
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "kind must be world or playable"})
+                    return
+                world, playable = job.export(manager.config, *view)
+                chosen = world if kind == "world" else playable
+                self._send(HTTPStatus.OK, chosen.png, "image/png", download=chosen.filename)
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
