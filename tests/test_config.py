@@ -26,6 +26,9 @@ def test_project_config_loads() -> None:
     config = load_config()
     assert config.layers.scales == (0.5, 1.0, 2.0, 4.0)
     assert config.paths.output_dir == DEFAULT_CONFIG_PATH.parent / "output"
+    # Cities: Skylines II's world map is 57,344 m across; a heightmap's playable area 14,336 m.
+    assert config.cs2.world_width_km == 57.344
+    assert config.cs2.playable_width_km == 14.336
 
 
 def test_missing_setting_is_named(tmp_path: Path) -> None:
@@ -40,6 +43,8 @@ def test_missing_setting_is_named(tmp_path: Path) -> None:
         {"plot": {"cutoff": 0}},
         {"parallel": {"threads": 0}},
         {"sea": {"water_fraction": 0.99}},
+        {"cs2": {"playable_width_km": 0}},
+        {"cs2": {"playable_width_km": 60.0}},
     ],
 )
 def test_invalid_values_are_rejected(tmp_path: Path, edit: dict[str, dict[str, object]]) -> None:

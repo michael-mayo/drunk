@@ -9,14 +9,6 @@ import numpy as np
 from app.composite_drunk import CompositeDrunk
 
 
-def periodic_axis(domain: float, points: int) -> np.ndarray:
-    """``points`` evenly spaced coordinates covering ``[-domain/2, domain/2)`` once, for a wrap-around map.
-
-    The far edge is left out because it is the same line as the near edge.
-    """
-    return -domain / 2.0 + domain * np.arange(points) / points
-
-
 @numba.njit(parallel=True, cache=True)
 def _resample_periodic(field: np.ndarray, n: int) -> np.ndarray:
     """Bilinearly resample the wrap-around square grid ``field`` onto an ``n`` x ``n`` grid over the same area.
@@ -131,7 +123,9 @@ class LayeredDrunk:
         """The combined height field on a ``grid_points`` x ``grid_points`` wrap-around grid, scaled to [0, 1].
 
         The grid covers the square of side ``domain`` centred on the origin
-        once (see ``periodic_axis``). ``progress`` is passed to ``layer_fields``.
+        once, starting at its lower-left corner and leaving out the far edges
+        (the same lines as the near edges). ``progress`` is passed to
+        ``layer_fields``.
         """
         total = np.sum(self.layer_fields(domain, grid_points, cutoff, progress), axis=0)
         lo, hi = total.min(), total.max()

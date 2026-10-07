@@ -48,6 +48,26 @@ def test_matches_exact_evaluation_within_cutoff() -> None:
     assert np.max(exact - field) <= CUTOFF * d.amplitude.sum()
 
 
+def test_periodic_matches_exact_sum_of_copies_even_for_windows_wider_than_the_map() -> None:
+    """On a wrap-around grid each deposit counts once per periodic copy, including bumps wider than the map."""
+    rng = np.random.default_rng(5)
+    d = random_deposits(rng, 60, 40.0)
+    # Make some deposits wide enough that their cutoff window exceeds the 32-unit period.
+    wide = Deposits(d.x, d.y, d.angle, d.var_major * np.where(np.arange(60) % 3 == 0, 20.0, 1.0),
+                    d.var_minor, d.amplitude)
+    axis = -SIDE / 2 + SIDE * np.arange(N) / N
+    field = deposit_field(wide, axis[0], SIDE / N, N, CUTOFF, periodic=True)
+    exact = np.zeros((N, N))
+    for i in range(-3, 4):
+        for j in range(-3, 4):
+            shifted = Deposits(wide.x + i * SIDE, wide.y + j * SIDE, wide.angle, wide.var_major, wide.var_minor,
+                               wide.amplitude)
+            exact += exact_field(shifted, axis)
+    assert np.all(field <= exact + 1e-9)
+    # A window spans under 3 periods, so up to 3 x 3 copies of a deposit reach a point, each truncated.
+    assert np.max(exact - field) <= 9 * CUTOFF * wide.amplitude.sum()
+
+
 def test_periodic_shift_by_one_period_is_unchanged() -> None:
     """A deposit and its copy one period away land in the same place."""
     d = random_deposits(np.random.default_rng(1), 100, 30.0)

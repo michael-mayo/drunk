@@ -19,7 +19,7 @@ def small_config() -> Config:
         config,
         composite=replace(config.composite, drunks=30),
         walk=replace(config.walk, num_steps=200),
-        plot=replace(config.plot, grid_points=96),
+        plot=replace(config.plot, domain=96.0, grid_points=96),
         rivers=replace(config.rivers, params=replace(config.rivers.params, sources=20)),
     )
 

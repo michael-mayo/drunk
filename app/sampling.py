@@ -2,6 +2,7 @@
 
 import math
 
+import numba
 import numpy as np
 
 # Fraction of the square's area covered by a typical Bridson point set, i.e.
@@ -14,6 +15,100 @@ _OVERSAMPLE = 1.3
 _CANDIDATES = 30
 
 
+@numba.njit(cache=True)
+def _far_enough(
+    x: float,
+    y: float,
+    grid: np.ndarray,
+    px: np.ndarray,
+    py: np.ndarray,
+    cell: float,
+    side: float,
+    radius: float,
+    periodic: bool,
+) -> bool:
+    """True if ``(x, y)`` is at least ``radius`` from every accepted point (measured across the edges if ``periodic``)."""
+    cells = grid.shape[0]
+    cx = min(int(x / cell), cells - 1)
+    cy = min(int(y / cell), cells - 1)
+    # A point within `radius` can be at most two cells away in each direction;
+    # on a grid narrower than 5 cells that is every cell.
+    reach = 2 if cells >= 5 or not periodic else 0
+    lo_x, hi_x, lo_y, hi_y = cx - reach, cx + reach + 1, cy - reach, cy + reach + 1
+    if not periodic:
+        lo_x, hi_x, lo_y, hi_y = max(lo_x, 0), min(hi_x, cells), max(lo_y, 0), min(hi_y, cells)
+    elif cells < 5:
+        lo_x, hi_x, lo_y, hi_y = 0, cells, 0, cells
+    for ix in range(lo_x, hi_x):
+        for iy in range(lo_y, hi_y):
+            j = grid[ix % cells, iy % cells]
+            if j < 0:
+                continue
+            dx = abs(x - px[j])
+            dy = abs(y - py[j])
+            if periodic:
+                dx = min(dx, side - dx)
+                dy = min(dy, side - dy)
+            if dx * dx + dy * dy < radius * radius:
+                return False
+    return True
+
+
+@numba.njit(cache=True)
+def _bridson(side: float, radius: float, periodic: bool, seed: int) -> np.ndarray:
+    """Bridson's algorithm in compiled code; returns the points in ``[0, side)^2`` (see ``bridson``)."""
+    np.random.seed(seed)
+    if periodic:
+        # A whole number of cells per side, so neighbouring cells wrap exactly.
+        cells = max(1, int(math.floor(side / (radius / math.sqrt(2.0)))))
+        cell = side / cells
+    else:
+        cell = radius / math.sqrt(2.0)
+        cells = max(1, int(math.ceil(side / cell)))
+    grid = -np.ones((cells, cells), dtype=np.int64)
+    # At most one point per background cell.
+    px = np.empty(cells * cells)
+    py = np.empty(cells * cells)
+    active = np.empty(cells * cells, dtype=np.int64)
+    n = 0
+    n_active = 0
+    x = np.random.uniform(0.0, side)
+    y = np.random.uniform(0.0, side)
+    while True:
+        # Accept (x, y): record it in the background grid and mark it active.
+        px[n] = x
+        py[n] = y
+        grid[min(int(x / cell), cells - 1), min(int(y / cell), cells - 1)] = n
+        active[n_active] = n
+        n += 1
+        n_active += 1
+        found = False
+        while n_active > 0 and not found:
+            k = np.random.randint(0, n_active)
+            base = active[k]
+            for _ in range(_CANDIDATES):
+                angle = np.random.uniform(0.0, 2.0 * math.pi)
+                dist = np.random.uniform(radius, 2.0 * radius)
+                x = px[base] + dist * math.cos(angle)
+                y = py[base] + dist * math.sin(angle)
+                if periodic:
+                    x %= side
+                    y %= side
+                if 0.0 <= x < side and 0.0 <= y < side and _far_enough(x, y, grid, px, py, cell, side, radius, periodic):
+                    found = True
+                    break
+            if not found:
+                # No room left around this point: retire it.
+                n_active -= 1
+                active[k] = active[n_active]
+        if not found:
+            break
+    points = np.empty((n, 2))
+    points[:, 0] = px[:n]
+    points[:, 1] = py[:n]
+    return points
+
+
 def bridson(side: float, radius: float, rng: np.random.Generator, periodic: bool = False) -> np.ndarray:
     """Poisson-disk sample the square ``[-side/2, side/2]^2`` with minimum spacing ``radius``.
 
@@ -24,72 +119,10 @@ def bridson(side: float, radius: float, rng: np.random.Generator, periodic: bool
     point per cell) makes each distance check constant-time. With
     ``periodic``, the square wraps around: candidates leaving one edge
     re-enter at the opposite one, and spacing is measured across the edges,
-    so the points tile seamlessly. Returns an (N, 2) array of points centred
-    on the origin.
+    so the points tile seamlessly. Runs in compiled code, seeded from
+    ``rng``. Returns an (N, 2) array of points centred on the origin.
     """
-    if periodic:
-        # A whole number of cells per side, so neighbouring cells wrap exactly.
-        cells = max(1, math.floor(side / (radius / math.sqrt(2.0))))
-        cell = side / cells
-    else:
-        cell = radius / math.sqrt(2.0)
-        cells = max(1, math.ceil(side / cell))
-    grid = -np.ones((cells, cells), dtype=int)
-    points: list[tuple[float, float]] = []
-
-    def cell_of(p: tuple[float, float]) -> tuple[int, int]:
-        """Background-grid cell containing ``p`` (in [0, side)^2 coordinates)."""
-        return min(int(p[0] / cell), cells - 1), min(int(p[1] / cell), cells - 1)
-
-    def distance(p: tuple[float, float], q: tuple[float, float]) -> float:
-        """Distance between ``p`` and ``q``, the shorter way round if ``periodic``."""
-        dx, dy = abs(p[0] - q[0]), abs(p[1] - q[1])
-        if periodic:
-            dx, dy = min(dx, side - dx), min(dy, side - dy)
-        return math.hypot(dx, dy)
-
-    def far_enough(p: tuple[float, float]) -> bool:
-        """True if ``p`` is at least ``radius`` from every accepted point."""
-        cx, cy = cell_of(p)
-        # A point within `radius` can be at most two cells away in each direction.
-        if periodic:
-            span = min(5, cells)
-            xs = {(cx + d) % cells for d in range(-2, 3)} if span == 5 else range(cells)
-            ys = {(cy + d) % cells for d in range(-2, 3)} if span == 5 else range(cells)
-        else:
-            xs = range(max(cx - 2, 0), min(cx + 3, cells))
-            ys = range(max(cy - 2, 0), min(cy + 3, cells))
-        for ix in xs:
-            for iy in ys:
-                j = grid[ix, iy]
-                if j >= 0 and distance(p, points[j]) < radius:
-                    return False
-        return True
-
-    def accept(p: tuple[float, float]) -> None:
-        """Record ``p`` as a sample and mark it active."""
-        grid[cell_of(p)] = len(points)
-        points.append(p)
-        active.append(len(points) - 1)
-
-    active: list[int] = []
-    accept((rng.uniform(0, side), rng.uniform(0, side)))
-    while active:
-        k = int(rng.integers(len(active)))
-        base = points[active[k]]
-        for _ in range(_CANDIDATES):
-            angle = rng.uniform(0.0, 2.0 * math.pi)
-            dist = rng.uniform(radius, 2.0 * radius)
-            p = (base[0] + dist * math.cos(angle), base[1] + dist * math.sin(angle))
-            if periodic:
-                p = (p[0] % side, p[1] % side)
-            if 0 <= p[0] < side and 0 <= p[1] < side and far_enough(p):
-                accept(p)
-                break
-        else:
-            # No room left around this point.
-            active.pop(k)
-    return np.array(points) - side / 2.0
+    return _bridson(float(side), float(radius), bool(periodic), int(rng.integers(0, 2**32))) - side / 2.0
 
 
 def poisson_disk_points(n: int, side: float, rng: np.random.Generator, periodic: bool = False) -> np.ndarray:

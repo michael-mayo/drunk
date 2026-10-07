@@ -8,6 +8,7 @@ report progress through an optional callback.
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import replace
 
 import numba
 import numpy as np
@@ -17,16 +18,15 @@ from app.config import Config
 from app.drainage import fill_hollows
 from app.drunk import Drunk
 from app.layered_drunk import LayeredDrunk
-from app.layered_drunk import periodic_axis
 from app.rivers import carve_rivers
 from app.sampling import poisson_disk_points
 from app.sampling import power_log_spacing
 from app.sea import sea_level
 
 # Share of the progress bar given to each stage, in order; they sum to 1.
-# (Measured on a 400 x 400 map: sampling homes in Python takes about as long
-# as evaluating the deposits in numba; walking is quick.)
-_STAGE_SHARES = {"build": 0.25, "walk": 0.10, "density": 0.45, "sea": 0.01, "rivers": 0.19}
+# (Measured on the 1600 x 1600 world map: evaluating the deposits and
+# draining and carving rivers take about the same time; the rest is quick.)
+_STAGE_SHARES = {"build": 0.02, "walk": 0.04, "density": 0.47, "sea": 0.01, "rivers": 0.46}
 
 
 @dataclass(frozen=True)
@@ -35,9 +35,8 @@ class TerrainResult:
 
     seed: int
     terrain: LayeredDrunk
-    # Final height field (normalised) on the square grid ``grid`` x ``grid``.
+    # Final height field (normalised), indexed [y, x], on the wrap-around map.
     field: np.ndarray
-    grid: np.ndarray
     sea_level: float
     # Each river cell's catchment area (0 elsewhere), or None if rivers are off.
     river_area: np.ndarray | None
@@ -55,6 +54,29 @@ class TerrainResult:
     def title(self) -> str:
         """Title for the rendered map."""
         return f"seed {self.seed} ({self.state}): sea level {self.sea_level:.3f}, {self.sea_fraction:.0%} sea"
+
+    def centred_on(self, cx: int, cy: int) -> "TerrainResult":
+        """The same map rolled round (it wraps) so that cell ``(cx, cy)`` (column, row) is at the centre.
+
+        The centre is cell ``(n // 2, n // 2)``; the playable area is the
+        square around it. Every cell keeps its height and neighbours, so the
+        terrain, sea and rivers are unchanged, only where the map's edges fall.
+        """
+        n_y, n_x = self.field.shape
+        shift = (n_y // 2 - cy, n_x // 2 - cx)
+        river_area = None if self.river_area is None else np.roll(self.river_area, shift, axis=(0, 1))
+        return replace(self, field=np.roll(self.field, shift, axis=(0, 1)), river_area=river_area)
+
+
+def playable_crop(config: Config, field: np.ndarray) -> np.ndarray:
+    """The playable area (``cs2.playable_width_km`` across) at the centre of a world-map field.
+
+    For the default config this is the central 400 x 400 of the 1600 x 1600
+    world: the area the terrain statistics were tuned on.
+    """
+    n = field.shape[0]
+    half = round(n * config.cs2.playable_width_km / config.cs2.world_width_km / 2)
+    return field[n // 2 - half : n // 2 + half, n // 2 - half : n // 2 + half]
 
 
 def build_layer(config: Config, scale: float, rng: np.random.Generator) -> CompositeDrunk:
@@ -99,8 +121,8 @@ def generate_height_field(
     config: Config,
     seed: int,
     progress: Callable[[str, float, str], None] | None = None,
-) -> tuple[LayeredDrunk, np.ndarray, np.ndarray]:
-    """Build, walk and evaluate the layered drunks for ``seed``; returns ``(terrain, grid axis, height field)``.
+) -> tuple[LayeredDrunk, np.ndarray]:
+    """Build, walk and evaluate the layered drunks for ``seed``; returns ``(terrain, height field)``.
 
     The field is the raw wrap-around height map, scaled to [0, 1], before sea
     level, draining or rivers. ``progress``, if given, is called with a stage
@@ -128,7 +150,7 @@ def generate_height_field(
 
     report("density")(0.0, "evaluating Gaussian deposits")
     field = terrain.density(config.plot.domain, config.plot.grid_points, config.plot.cutoff, progress=report("density"))
-    return terrain, periodic_axis(config.plot.domain, config.plot.grid_points), field
+    return terrain, field
 
 
 def generate_terrain(
@@ -152,7 +174,7 @@ def generate_terrain(
         if progress is not None:
             progress(starts[stage] + _STAGE_SHARES[stage] * fraction, message)
 
-    terrain, grid, field = generate_height_field(config, seed, report)
+    terrain, field = generate_height_field(config, seed, report)
 
     report("sea", 0.0, "setting sea level")
     level = sea_level(field, config.sea.water_fraction)
@@ -176,4 +198,4 @@ def generate_terrain(
     else:
         state = "raw"
     report("rivers", 1.0, "terrain done")
-    return TerrainResult(seed, terrain, field, grid, level, river_area, carved, to_sea, state)
+    return TerrainResult(seed, terrain, field, level, river_area, carved, to_sea, state)

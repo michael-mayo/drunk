@@ -12,6 +12,12 @@ sets the share of the map that is sea. It applies when Generate is pressed,
 since sea level decides where rivers drain to, so it is locked while a map
 is generating.
 
+The map is the whole Cities: Skylines II world map (``cs2.world_width_km``
+across) with the playable area (``cs2.playable_width_km``) outlined at its
+centre. Clicking the map moves the playable area to the clicked point: the
+world wraps around, so it is rolled to bring that point to the centre. A
+dashed square previews the new position under the mouse.
+
 Heights stay normalised (0-1) throughout; the slider only sets how they are
 labelled in Cities: Skylines II metres: 0.0 is 0 m and 1.0 is the slider's
 peak height (default ``ui.peak_height_m``, at most ``cs2.max_height_m``), so
@@ -28,8 +34,9 @@ dependencies. Endpoints:
 - ``GET /api/progress/<id>``: ``{"fraction", "message", "done", "error",
   "info"}``; ``info`` (when done) gives the normalised sea level and highest
   point, the sea fraction and river counts.
-- ``GET /api/image/<id>?peak=<m>``: the finished map as PNG, labelled with
-  1.0 = ``<m>`` metres (default ``ui.peak_height_m``).
+- ``GET /api/image/<id>?peak=<m>&cx=<col>&cy=<row>``: the finished map as
+  PNG, labelled with 1.0 = ``<m>`` metres (default ``ui.peak_height_m``),
+  rolled so grid cell ``(cx, cy)`` is at the centre (default: the middle cell).
 """
 
 import argparse
@@ -63,12 +70,15 @@ from app.config import Config
 from app.config import load_config
 from app.pipeline import TerrainResult
 from app.pipeline import generate_terrain
+from app.rendering import MAP_RECT
 from app.rendering import save_terrain_map
 
 # matplotlib's pyplot isn't thread-safe; the server handles requests on several threads.
 RENDER_LOCK = threading.Lock()
-# Rendered images kept per finished job (one per slider value recently viewed).
-IMAGE_CACHE_SIZE = 8
+# Rendered images kept per finished job (one per slider value and centre recently viewed).
+IMAGE_CACHE_SIZE = 16
+# Resolution of the map images: 7 x 6 in at 140 dpi is 980 x 840 px, the page's width.
+UI_DPI = 140
 
 # The single page: seed field, Generate button, progress bar, status line and map.
 PAGE = """<!doctype html>
@@ -84,7 +94,7 @@ PAGE = """<!doctype html>
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, sans-serif; }
-  main { max-width: 760px; margin: 0 auto; padding: 24px 16px; }
+  main { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
   h1 { font-size: 20px; margin: 0 0 16px; }
   .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   label { color: var(--muted); }
@@ -95,9 +105,14 @@ PAGE = """<!doctype html>
   button:disabled { opacity: 0.5; cursor: default; }
   progress { width: 100%; height: 10px; margin-top: 16px; accent-color: var(--accent); }
   #status { color: var(--muted); min-height: 1.4em; margin-top: 6px; }
-  #map { display: block; width: 100%; height: auto; margin-top: 16px; border: 1px solid var(--border);
-         border-radius: 6px; background: var(--panel); }
-  #map[hidden] { display: none; }
+  .mapwrap { position: relative; overflow: hidden; margin-top: 16px; border: 1px solid var(--border);
+             border-radius: 6px; background: var(--panel); }
+  .mapwrap[hidden] { display: none; }
+  #map { display: block; width: 100%; height: auto; }
+  #map.picking { cursor: crosshair; }
+  #preview { position: absolute; border: 2px dashed #fff; outline: 1px solid rgba(0, 0, 0, 0.6);
+             pointer-events: none; }
+  #preview[hidden] { display: none; }
   .scale { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
   .scale input[type=range] { flex: 1; min-width: 180px; width: auto; padding: 0; accent-color: var(--accent); }
   #peakValue { min-width: 72px; font-variant-numeric: tabular-nums; }
@@ -126,7 +141,13 @@ PAGE = """<!doctype html>
   <div class="hint" id="seaHint">Share of the map that is sea. Applies when you press Generate (rivers drain to the sea).</div>
   <progress id="bar" max="1" value="0"></progress>
   <div id="status">Enter a seed and press Generate.</div>
-  <img id="map" alt="Generated terrain map" hidden>
+  <div class="hint" id="pickHint" hidden>The white square is the playable area (__PLAYABLE_KM__ km) at the centre
+    of the __WORLD_KM__ km world map. Click anywhere to move it there: the world wraps around, so the map
+    re-centres on your point.</div>
+  <div class="mapwrap" id="mapwrap" hidden>
+    <img id="map" alt="Generated terrain map">
+    <div id="preview" hidden></div>
+  </div>
 </main>
 <script>
 const form = document.getElementById("form"), seedInput = document.getElementById("seed");
@@ -135,9 +156,16 @@ const statusLine = document.getElementById("status"), map = document.getElementB
 const peak = document.getElementById("peak"), peakValue = document.getElementById("peakValue");
 const sea = document.getElementById("sea"), seaValue = document.getElementById("seaValue");
 const seaHint = document.getElementById("seaHint");
+const mapWrap = document.getElementById("mapwrap"), preview = document.getElementById("preview");
+const pickHint = document.getElementById("pickHint");
 const SEA_HINT = seaHint.textContent;
+// Where the map sits in the image (left, bottom, width, height as fractions, from the lower left).
+const MAP_RECT = __MAP_RECT__;
+const WORLD_KM = __WORLD_KM__, PLAYABLE_KM = __PLAYABLE_KM__;
 let generatedSea = null;
 let currentJob = null, currentInfo = null, redrawTimer = null;
+// Grid cell (column, row) of the generated world shown at the map's centre, inside the playable area.
+let centre = null;
 
 const metres = (v) => Math.round(v).toLocaleString() + " m";
 function showPeak() { peakValue.textContent = metres(Number(peak.value)); }
@@ -155,9 +183,43 @@ function summary() {
            + `${Math.round(i.sea_fraction * 100)}% sea`;
   if (i.state === "no sea") text += ", no rivers (with no sea there is nowhere to drain to)";
   else if (i.rivers !== null) text += `, ${i.rivers} rivers (${i.rivers_to_sea} reach the sea)`;
+  const km = (c) => ((c + 0.5) * WORLD_KM / i.grid_points).toFixed(1);
+  text += `. Playable area centred at ${km(centre[0])}, ${km(centre[1])} km of the generated world.`;
   statusLine.textContent = text;
 }
-function showMap() { map.src = `/api/image/${currentJob}?peak=${peak.value}`; map.hidden = false; }
+function showMap() {
+  map.src = `/api/image/${currentJob}?peak=${peak.value}&cx=${centre[0]}&cy=${centre[1]}`;
+  mapWrap.hidden = false; pickHint.hidden = false;
+}
+
+// The point under the mouse as fractions (0-1) across the map from its lower-left corner, or null if off the map.
+function mapPoint(event) {
+  const r = map.getBoundingClientRect();
+  const fx = (event.clientX - r.left) / r.width, fy = 1 - (event.clientY - r.top) / r.height;
+  const u = (fx - MAP_RECT[0]) / MAP_RECT[2], v = (fy - MAP_RECT[1]) / MAP_RECT[3];
+  return (u >= 0 && u <= 1 && v >= 0 && v <= 1) ? [u, v] : null;
+}
+map.addEventListener("mousemove", (event) => {
+  const point = currentInfo ? mapPoint(event) : null;
+  map.classList.toggle("picking", point !== null);
+  preview.hidden = point === null;
+  if (point === null) return;
+  // Outline where the playable area would go, centred on the mouse.
+  const r = map.getBoundingClientRect(), side = r.width * MAP_RECT[2] * PLAYABLE_KM / WORLD_KM;
+  preview.style.width = preview.style.height = side + "px";
+  preview.style.left = (event.clientX - r.left - side / 2) + "px";
+  preview.style.top = (event.clientY - r.top - side / 2) + "px";
+});
+map.addEventListener("mouseleave", () => { preview.hidden = true; });
+map.addEventListener("click", (event) => {
+  const point = currentInfo ? mapPoint(event) : null;
+  if (point === null) return;
+  // Move the clicked point to the centre: it lies (point - 0.5) of the way across from the current centre.
+  const n = currentInfo.grid_points, wrap = (c) => ((c % n) + n) % n;
+  centre = [wrap(centre[0] + Math.round((point[0] - 0.5) * n)), wrap(centre[1] + Math.round((point[1] - 0.5) * n))];
+  preview.hidden = true;
+  showMap(); summary();
+});
 showPeak();
 peak.addEventListener("input", () => {
   showPeak(); summary();
@@ -197,6 +259,7 @@ async function poll(job, seed, seaPercent) {
     if (state.error) { statusLine.textContent = "Failed: " + state.error; finish(); return; }
     if (state.done) {
       currentJob = job; currentInfo = state.info; generatedSea = seaPercent;
+      centre = [Math.floor(state.info.grid_points / 2), Math.floor(state.info.grid_points / 2)];
       map.alt = `Generated terrain map for seed ${seed}`;
       showMap(); summary(); showSea();
       finish(); return;
@@ -218,12 +281,15 @@ class Job:
 
     seed: int
     water_fraction: float
+    # Sides of the world map and of the playable area at its centre, in km.
+    world_km: float
+    playable_km: float
     fraction: float = 0.0
     message: str = "queued"
     done: bool = False
     error: str | None = None
     result: TerrainResult | None = None
-    # Rendered PNGs keyed by peak height (m), most recently used last.
+    # Rendered PNGs keyed by (peak height in m, centre column, centre row), most recently used last.
     images: OrderedDict = dataclass_field(default_factory=OrderedDict)
     lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
 
@@ -247,13 +313,18 @@ class Job:
                     "rivers": r.rivers_carved if r.state == "rivers" else None,
                     "state": r.state,
                     "rivers_to_sea": r.rivers_to_sea,
+                    "grid_points": r.field.shape[0],
                 }
             return {"fraction": self.fraction, "message": self.message, "done": self.done, "error": self.error,
                     "info": info}
 
-    def image(self, peak_m: float) -> bytes:
-        """The finished map as PNG, labelled with normalised height 1.0 = ``peak_m`` metres (cached)."""
-        key = round(peak_m, 3)
+    def image(self, peak_m: float, cx: int, cy: int) -> bytes:
+        """The finished map as PNG, centred on cell ``(cx, cy)`` and labelled with height 1.0 = ``peak_m`` metres (cached).
+
+        The world map wraps around, so it is rolled to bring the cell to the
+        centre, where the playable area is outlined.
+        """
+        key = (round(peak_m, 3), cx, cy)
         with self.lock:
             if key in self.images:
                 self.images.move_to_end(key)
@@ -263,10 +334,11 @@ class Job:
             raise ValueError("the map isn't finished")
         title = (f"seed {self.seed}: sea level {r.sea_level * peak_m:,.0f} m, "
                  f"highest point {float(r.field.max()) * peak_m:,.0f} m, {r.sea_fraction:.0%} sea")
+        r = r.centred_on(cx, cy)
         buffer = io.BytesIO()
         with RENDER_LOCK:
-            save_terrain_map(buffer, r.field, r.grid, r.grid, title, r.sea_level, rivers=r.river_area,
-                             height_scale_m=peak_m)
+            save_terrain_map(buffer, r.field, title, r.sea_level, self.world_km, rivers=r.river_area,
+                             height_scale_m=peak_m, playable_km=self.playable_km, dpi=UI_DPI)
         png = buffer.getvalue()
         with self.lock:
             self.images[key] = png
@@ -291,6 +363,9 @@ class JobManager:
             .replace("__PEAK_DEFAULT__", f"{config.ui.peak_height_m:g}")
             .replace("__SEA_MAX__", f"{round(config.ui.sea_fraction_max * 100):d}")
             .replace("__SEA_DEFAULT__", f"{round(config.sea.water_fraction * 100):d}")
+            .replace("__MAP_RECT__", json.dumps(list(MAP_RECT)))
+            .replace("__WORLD_KM__", f"{config.cs2.world_width_km:g}")
+            .replace("__PLAYABLE_KM__", f"{config.cs2.playable_width_km:g}")
         )
         self.jobs: dict[int, Job] = {}
         self._ids = itertools.count(1)
@@ -306,7 +381,7 @@ class JobManager:
             if self._running is not None and not self._running.done:
                 return None
             job_id = next(self._ids)
-            job = Job(seed, water_fraction)
+            job = Job(seed, water_fraction, self.config.cs2.world_width_km, self.config.cs2.playable_width_km)
             self.jobs[job_id] = job
             self._running = job
             for old in sorted(self.jobs)[: -self.KEEP]:
@@ -323,8 +398,9 @@ class JobManager:
             job.update(0.97, "drawing the map")
             with job.lock:
                 job.result = result
-            # Draw at the default peak height now, so the first view is instant.
-            job.image(self.config.ui.peak_height_m)
+            # Draw at the default peak height and centre now, so the first view is instant.
+            middle = result.field.shape[0] // 2
+            job.image(self.config.ui.peak_height_m, middle, middle)
             with job.lock:
                 job.fraction, job.message, job.done = 1.0, "done", True
         except Exception as exc:  # report any failure to the page rather than killing the thread silently
@@ -384,8 +460,17 @@ def make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
                     peak_m = min(max(peak_m, ui.peak_height_min_m), manager.config.cs2.max_height_m)
                     if job.result is None:
                         self._json(HTTPStatus.CONFLICT, {"error": "not finished"})
-                    else:
-                        self._send(HTTPStatus.OK, job.image(peak_m), "image/png")
+                        return
+                    n = job.result.field.shape[0]
+                    try:
+                        cx = int(query.get("cx", [n // 2])[0])
+                        cy = int(query.get("cy", [n // 2])[0])
+                    except ValueError:
+                        cx = cy = -1
+                    if not (0 <= cx < n and 0 <= cy < n):
+                        self._json(HTTPStatus.BAD_REQUEST, {"error": f"cx and cy must be whole numbers from 0 to {n - 1}"})
+                        return
+                    self._send(HTTPStatus.OK, job.image(peak_m, cx, cy), "image/png")
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 

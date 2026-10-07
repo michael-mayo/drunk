@@ -34,7 +34,8 @@ class CompositeDrunk:
         """Sum of all members' deposits on a ``grid_points`` x ``grid_points`` wrap-around grid.
 
         The grid covers the square of side ``domain`` centred on the origin
-        once (see ``periodic_axis``), and deposits are wrapped into it.
+        once, starting at its lower-left corner and leaving out the far edges
+        (the same lines as the near edges), and deposits are wrapped into it.
         Gaussians are truncated below ``cutoff`` times their peak.
         """
         if self.deposits is None:

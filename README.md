@@ -9,7 +9,8 @@ Each drunk staggers around its home, leaving a trail of small Gaussian bumps. Hu
 at four scales are summed into a multi-scale height field whose statistics match real terrain.
 Sea level is then set, hollows are filled so every land cell drains to the sea, and "river
 drunks" carve graded valleys down to the coast. Everything heavy runs in compiled, parallel
-[numba](https://numba.pydata.org/) code, so a 400 × 400 map takes about a second to generate.
+[numba](https://numba.pydata.org/) code, so a whole 57 km world map (1600 × 1600 cells) takes
+about 7 s to generate.
 
 There are two ways to use it: a command-line program that saves maps for the seeds in
 `config.yaml`, and a small web UI where you type a seed, press **Generate** and see the map.
@@ -22,8 +23,16 @@ Sea is in blues (darker with depth, coastline outlined), land runs from green lo
 peaks, and rivers are light-blue lines that widen downstream. The maps wrap around: the left edge
 continues into the right, and the top into the bottom.
 
+Each map is a Cities: Skylines II **world map, 57.344 km** on a side, with the **playable area,
+14.336 km** on a side, outlined in white at its centre. In CS2 a heightmap is 4096 × 4096 pixels
+covering the playable area (3.5 m per pixel), and the optional world map is another 4096 × 4096
+image four times wider (14 m per pixel) whose central 1024 × 1024 pixels are the playable area. In
+the web UI you choose where the playable area goes by clicking on the world map. Heights are
+normalised (0–1); the web UI labels them in metres.
+
 > **Not yet included:** export to Cities: Skylines II's 4096 × 4096 16-bit heightmap format. The
-> current output is a 400 × 400 field drawn as an annotated PNG.
+> current output is a 1600 × 1600 world map (400 × 400 for the playable area) drawn as an annotated
+> PNG.
 
 ## Quick start
 
@@ -85,17 +94,17 @@ python -m app.main --config my_config.yaml  # use another config file
 
 To make different maps, edit `seeds` in [`config.yaml`](config.yaml). Every other setting is
 there too (see [Configuration](#configuration)). Maps are saved as
-`output/terrain_seed<seed>.png`; the `output/` folder is git-ignored. Three maps take about 4 s
-on a 16-core machine. Example console output:
+`output/terrain_seed<seed>.png`; the `output/` folder is git-ignored. Three maps take about 25 s
+on a 16-core machine (about 7 s each to generate, plus drawing). Example console output:
 
 ```
 seed 41: LayeredDrunk(layers=4, scales=[0.5, 1.0, 2.0, 4.0], h=0.5, steps=1000)
-  scale=0.5: 200 drunks, step_size=0.5, r0=5, variance=0.25, kappa_max 0.01-0.4
-  scale=1: 200 drunks, step_size=1, r0=10, variance=1, kappa_max 0.01-0.4
-  scale=2: 200 drunks, step_size=2, r0=20, variance=4, kappa_max 0.01-0.4
-  scale=4: 200 drunks, step_size=4, r0=40, variance=16, kappa_max 0.01-0.4
-  sea level 0.368
-  rivers: 85 carved (51 reach the sea, 34 are tributaries); every land cell drains to the sea
+  scale=0.5: 3200 drunks, step_size=0.5, r0=5, variance=0.25, kappa_max 0.01-0.4
+  scale=1: 3200 drunks, step_size=1, r0=10, variance=1, kappa_max 0.01-0.4
+  scale=2: 3200 drunks, step_size=2, r0=20, variance=4, kappa_max 0.01-0.4
+  scale=4: 3200 drunks, step_size=4, r0=40, variance=16, kappa_max 0.01-0.4
+  sea level 0.394
+  rivers: 1221 carved (716 reach the sea, 505 are tributaries); every land cell drains to the sea
 Saved /home/michael/drunk/output/terrain_seed41.png
 seed 42: ...
 seed 43: ...
@@ -114,8 +123,14 @@ browser). Then:
 
 1. Type a **seed** (any whole number from 0 up) and set the **Sea** slider (the share of the map
    that is sea).
-2. Press **Generate**. A progress bar follows the stages, and the map appears in about 1.5 s.
-3. Move the **Peak height** slider to choose how many metres the highest point represents. This
+2. Press **Generate**. A progress bar follows the stages, and the world map appears in about 8 s,
+   with the playable area outlined in white at its centre.
+3. **Pick the playable area:** move the mouse over the map and a dashed square shows where the
+   playable area would go; click to put it there. The world wraps around, so the map is re-centred
+   on your point: the playable area always stays in the middle and the world moves around it. Click
+   again as often as you like; the status line gives the playable area's centre in km of the
+   generated world.
+4. Move the **Peak height** slider to choose how many metres the highest point represents. This
    only relabels the colour bar and summary in metres; the map itself doesn't change.
 
 Moving the Sea slider after a map is drawn has no effect until you press Generate again, because
@@ -144,13 +159,14 @@ sea, drained land and rivers.
 
 ```mermaid
 flowchart LR
-    S[seed] --> B[build 4 layers<br/>of 200 drunks]
+    S[seed] --> B[build 4 layers<br/>of 3200 drunks]
     B --> W[walk every drunk<br/>1000 steps]
     W --> D[sum each layer's<br/>Gaussian deposits]
     D --> H[weight and add layers<br/>scale to 0..1]
     H --> SL[set sea level<br/>15% of the map]
     SL --> R[carve rivers<br/>drain to the sea]
     R --> P[terrain_seedN.png]
+    R --> U[web UI: pick the<br/>playable area]
 ```
 
 ### 1. A drunk's walk
@@ -182,12 +198,13 @@ A drunk's height field is the sum of its deposits.
 
 ### 2. Many drunks in a layer
 
-A **layer** (`CompositeDrunk`) holds 200 drunks. Within a layer they differ only in:
+A **layer** (`CompositeDrunk`) holds 3200 drunks over the world map, 200 per playable area. Within
+a layer they differ only in:
 
 - **Seed:** each drunk's walk depends only on its own seed.
 - **Home:** homes are spread evenly but irregularly over the map by Poisson-disk sampling
   (`app/sampling.py`): no two are closer than a minimum spacing, chosen automatically (about 4.8
-  units for 200 drunks in the 96 × 96 map). Spacing is measured across the map's edges, since the
+  units for 3200 drunks in the 384 × 384 world). Spacing is measured across the map's edges, since the
   map wraps around.
 - **`kappa_max`:** spread from 0.01 to 0.4 with power-log spacing. Member `i` of `n` gets
   `kappa_max_start · (kappa_max_end / kappa_max_start) ^ (t ^ p)`, with `t = i / (n − 1)` and
@@ -239,14 +256,28 @@ same statistics over seeds 1–8 (without sea or rivers) are unchanged within no
 
 ### 4. The map wraps around
 
-The map is a 96 × 96 square treated as a torus. Drunks walk freely, but each deposit is drawn at
-its position modulo the map size, so a bump crossing the right edge continues from the left edge,
-and likewise top and bottom. This has three benefits:
+The world map is a 384 × 384 square of walk units (drawn as 57.344 km) treated as a torus. Drunks
+walk freely, but each deposit is drawn at its position modulo the map size, so a bump crossing the
+right edge continues from the left edge, and likewise top and bottom. This has four benefits:
 
 - **No thinning at the edges.** On a cut-out map, cells near an edge would miss the deposits of
   drunks beyond it, giving every map a slight dome.
 - **No wasted work.** Every deposit lands on the map.
 - **Seamless tiling.** Opposite edges match.
+- **Any point can be the centre.** Rolling the map round changes only where its edges fall, so
+  the playable area can be put anywhere (see below).
+
+**World map and playable area.** The terrain was tuned so that 96 walk units look like a real
+14.3 km area: one CS2 playable area. The world map is four times wider, 384 units (57.344 km),
+with 16 times as many drunks (3200 per layer) and river sources (1600), so every playable-sized
+window of it has the same terrain statistics. The grid is 1600 × 1600, so the playable area at the
+centre is exactly 400 × 400 cells. Drunks don't need to reach the edges for this to work: homes are
+spread over the whole world, each drunk builds terrain only within about 100 units of its home,
+and there are no edges anyway.
+
+In the web UI, clicking a point on the world map makes it the centre of the playable area
+(`TerrainResult.centred_on`): the map is rolled round so that point is in the middle, where the
+playable square is always drawn.
 
 ### 5. Sea, drainage and rivers
 
@@ -254,7 +285,7 @@ and likewise top and bottom. This has three benefits:
 
 1. **Sea level** (`app/sea.py`) is set so that `sea.water_fraction` (15%) of the map lies below
    it. Every map then gets the same share of sea, whatever its heights. For the three sample maps
-   it is 0.301 to 0.368. Heights are not changed. Everything below sea level counts as sea,
+   it is 0.269 to 0.394. Heights are not changed. Everything below sea level counts as sea,
    including landlocked basins, so the sea is a scatter of basins rather than one ocean.
 2. **Draining** (`app/drainage.py`) fills hollows. About 11% of the raw terrain's land sits in
    closed depressions (real terrain: about 1.5%), where water would pool instead of reaching the
@@ -298,16 +329,17 @@ skipped.
 
 All heavy work is compiled with numba and runs in parallel on every core (`parallel.threads`):
 
-| Stage | Where | Time (400 × 400 map, 16 cores) |
+| Stage | Where | Time (1600 × 1600 world map, 16 cores) |
 |---|---|---|
-| Sample homes (Poisson disk) | `app/sampling.py` (Python) | ~0.3 s |
-| Walk 800 drunks × 1000 steps | `app/drunk.py` `_walk` | ~0.02 s |
-| Sum 800 000 Gaussian deposits | `app/deposits.py` `_deposit_field` | ~0.4 s |
-| Fill hollows, carve rivers | `app/drainage.py`, `app/rivers.py` | ~0.2 s |
-| Draw the PNG | `app/rendering.py` (matplotlib) | ~0.2 s |
+| Sample 12 800 homes (Poisson disk) | `app/sampling.py` `_bridson` | ~0.2 s |
+| Walk 12 800 drunks × 1000 steps | `app/drunk.py` `_walk` | ~0.3 s |
+| Sum 12.8 million Gaussian deposits | `app/deposits.py` `_deposit_field` | ~3.1 s |
+| Fill hollows, carve 1200 rivers | `app/drainage.py`, `app/rivers.py` | ~3.3 s |
+| Draw the PNG | `app/rendering.py` (matplotlib) | ~0.5 s |
 
-That is about 0.9 s to generate a map plus 0.2 s to draw it. The earlier pure-Python version
-took about 20 s per map.
+That is about 7 s to generate a world map, and 0.5 s to draw it (or redraw it re-centred in the
+UI). Peak memory is about 1.2 GB. For comparison, the earlier pure-Python version took about 20 s
+for a single 14 km map, a sixteenth of the area.
 
 A map depends only on its seed and the config, never on the number of threads:
 
@@ -315,9 +347,12 @@ A map depends only on its seed and the config, never on the number of threads:
   with its own seed before drawing all its numbers, so its walk is the same whichever thread runs
   it.
 - **Deposits:** each deposit is only evaluated inside the box where it exceeds `plot.cutoff`
-  (1/4096) of its peak, about 4.08 standard deviations. Deposits are bucketed by the grid rows
-  they touch, and rows are filled in parallel. Each row is written by one thread, adding its
-  deposits in a fixed order, so the sum is bit-for-bit the same on any number of threads.
+  (1/4096) of its peak, about 4.08 standard deviations; along each grid row, only the cells
+  inside that ellipse are visited, with values from a two-multiplication recurrence instead of an
+  `exp` per cell. Deposits are bucketed by the first grid row they touch, and rows are filled in
+  parallel, each looking back only as far as a deposit can reach. Each row is written by one
+  thread, adding its deposits in a fixed order, so the sum is bit-for-bit the same on any number
+  of threads.
 
 ## Configuration
 
@@ -331,7 +366,7 @@ resolved against the folder containing the config file.
 | `seeds` | list of int | `[41, 42, 43]` | `app.main` makes one map per seed |
 | `layers.scales` | list of float | `[0.5, 1.0, 2.0, 4.0]` | One layer per scale `s`: step size and `r0` × `s`, deposit variance × `s²` |
 | `layers.h` | float | `0.5` | Layer weighting exponent: layer `j` is weighted `(s_j / s_min)^h` after scaling to unit standard deviation |
-| `composite.drunks` | int | `200` | Drunks in each layer |
+| `composite.drunks` | int | `3200` | Drunks in each layer: 200 per playable area (96 × 96 units), the density the terrain was tuned at; scale with `plot.domain`'s area |
 | `composite.kappa_max_start` | float | `0.01` | `kappa_max` of the first drunk in each layer (> 0) |
 | `composite.kappa_max_end` | float | `0.4` | `kappa_max` of the last drunk (> 0) |
 | `composite.kappa_max_power` | float | `4.0` | Power-log spacing exponent: `1` = logarithmic, `> 1` = more drunks near `kappa_max_start` |
@@ -342,14 +377,14 @@ resolved against the folder containing the config file.
 | `deposit.variance` | float | `1.0` | Long-axis variance of each deposit, at scale 1 (short axis = `variance × u`, `u` ~ U(0, 1]) |
 | `deposit.initial_amplitude` | float | `1.0` | Peak height of the first deposit |
 | `deposit.decay` | float | `0.999` | The k-th deposit has amplitude `initial_amplitude × decay^k` |
-| `plot.domain` | float | `96.0` | Side of the square, wrap-around map, centred on the origin, in walk units |
-| `plot.grid_points` | int | `400` | Grid points per side of the height field |
+| `plot.domain` | float | `384.0` | Side of the square, wrap-around world map, centred on the origin, in walk units (drawn as `cs2.world_width_km`); 96 units is one playable area |
+| `plot.grid_points` | int | `1600` | Grid points per side of the height field (400 per playable area) |
 | `plot.cutoff` | float | `0.000244140625` (1/4096) | Each deposit is evaluated only where it exceeds `cutoff` × its peak (≈ 4.08 standard deviations); must be in (0, 1) |
 | `sea.water_fraction` | float | `0.15` | Share of each map that is sea (also the UI slider's default); in [0, 1), `0` = no sea, so no draining or rivers |
 | `drainage.fill` | bool | `true` | Fill hollows when rivers are off (river carving always drains) |
 | `drainage.epsilon` | float | `0.000001` | Gradient left across filled hollows, in normalised height per cell |
 | `rivers.enabled` | bool | `true` | Carve rivers after setting sea level |
-| `rivers.sources` | int | `100` | River sources, Poisson-disk sampled (those in or near the sea are dropped) |
+| `rivers.sources` | int | `1600` | River sources over the world, 100 per playable area, Poisson-disk sampled (those in or near the sea are dropped) |
 | `rivers.min_source_height` | float | `0.05` | Minimum source height above sea level, as a fraction of the land's height range |
 | `rivers.direction_smoothing` | float | `2.0` | Gaussian smoothing (cells) of the downstream-direction field |
 | `rivers.kappa` | float | `16.0` | von Mises concentration around the downstream direction (lower = more meandering) |
@@ -359,6 +394,8 @@ resolved against the folder containing the config file.
 | `rivers.min_valley_sigma` | float | `1.0` | Narrowest valley sigma, in cells |
 | `rivers.stall_steps` | int | `50` | Steps without progress towards the sea before switching to steepest descent |
 | `cs2.max_height_m` | float | `4096.0` | Height spanned by a CS2 16-bit heightmap at the editor's default scale; the UI's peak-height maximum |
+| `cs2.world_width_km` | float | `57.344` | Side of the CS2 world map; the whole generated map is drawn this wide, with axes in km |
+| `cs2.playable_width_km` | float | `14.336` | Side of the CS2 playable area (what a heightmap covers), outlined at the centre of the world map |
 | `ui.host` / `ui.port` | str / int | `127.0.0.1` / `9000` | Address the web UI serves on |
 | `ui.open_browser` | bool | `true` | Open the page in the browser when the UI starts |
 | `ui.peak_height_m` | float | `1000.0` | Default peak-height slider value: height 1.0 is labelled as this many metres |
@@ -408,12 +445,13 @@ Endpoints (for scripting):
 |---|---|
 | `GET /` | The page |
 | `POST /api/generate` with `{"seed": <int>, "sea_percent": <number>}` | Start a job (`sea_percent` optional, 0 to `ui.sea_fraction_max` × 100); returns `{"job": <id>}`, 409 if one is running, 400 for a bad seed or sea percentage |
-| `GET /api/progress/<id>` | `{"fraction", "message", "done", "error", "info"}`; when done, `info` gives the sea level, highest point, sea fraction and river counts |
-| `GET /api/image/<id>?peak=<m>` | The finished map as PNG, labelled with height 1.0 = `<m>` metres |
+| `GET /api/progress/<id>` | `{"fraction", "message", "done", "error", "info"}`; when done, `info` gives the sea level, highest point, sea fraction, river counts and `grid_points` |
+| `GET /api/image/<id>?peak=<m>&cx=<col>&cy=<row>` | The finished world map as PNG, labelled with height 1.0 = `<m>` metres, rolled so grid cell (`cx`, `cy`) is at the centre inside the outlined playable area (default: the middle cell; 400 if outside the grid) |
 
 ### `util/readme_figures.py`: README figures
 
-Draws `drunk_walks.png`, `layers.png` and `stages.png` (seed 41) from `config.yaml`.
+Draws `drunk_walks.png`, `layers.png` and `stages.png` (seed 41) from `config.yaml`. The layer and
+stage figures show the central playable area, since the whole world is too busy to read.
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -461,8 +499,9 @@ amplitude and variance scaling by spread.
 
 Needs the Copernicus tiles. Generates one raw map per seed from `config.yaml` (cached in
 `output/experiments/map_cache/`), applies each variant (drain only, or rivers with overridden
-parameters), computes the four statistics above plus channel concavity, and ranks variants against
-real terrain. Results go to `output/experiments/`.
+parameters), computes the four statistics above (on the central playable area, the size of the
+real-terrain crops) plus channel concavity (over the whole world, which needs whole catchments),
+and ranks variants against real terrain. Results go to `output/experiments/`.
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -489,15 +528,17 @@ from app.pipeline import generate_terrain
 
 config = load_config()
 result = generate_terrain(config, seed=7)
-result.field        # 400 x 400 heights in [0, 1], drained, rivers carved
+result.field        # 1600 x 1600 heights in [0, 1], drained, rivers carved
+moved = result.centred_on(300, 1450)   # the world rolled so cell (column 300, row 1450) is central
 result.sea_level    # heights below this are sea
 result.river_area   # catchment area of each river cell (0 elsewhere)
 ```
 
 | Name | Module | Description |
 |---|---|---|
-| `generate_terrain(config, seed, progress=None)` | `app.pipeline` | The whole pipeline; returns a `TerrainResult` (field, grid, sea level, rivers, state) |
-| `generate_height_field(config, seed, progress=None)` | `app.pipeline` | Only the raw height field: returns `(LayeredDrunk, grid axis, field)` |
+| `generate_terrain(config, seed, progress=None)` | `app.pipeline` | The whole pipeline; returns a `TerrainResult` (field, sea level, rivers, state); `.centred_on(cx, cy)` rolls it so a cell is at the centre |
+| `playable_crop(config, field)` | `app.pipeline` | The central playable area of a world-map field (400 × 400 of 1600 × 1600) |
+| `generate_height_field(config, seed, progress=None)` | `app.pipeline` | Only the raw height field: returns `(LayeredDrunk, field)` |
 | `build_layer(config, scale, rng)` | `app.pipeline` | One layer's `CompositeDrunk` at `scale` |
 | `Drunk(seed, step_size, kappa_max, r0, variance, decay, initial_amplitude, home)` | `app.drunk` | A drunk's parameters (frozen dataclass); `seed` must be in [0, 2³²) |
 | `walk_drunks(drunks, num_steps)` | `app.drunk` | Walk drunks in parallel; returns their `Deposits`, drunk by drunk |
@@ -509,7 +550,7 @@ result.river_area   # catchment area of each river cell (0 elsewhere)
 | `fill_hollows(field, outlets, periodic, epsilon)` | `app.drainage` | Priority-flood fill so every cell drains to an outlet |
 | `flow_accumulation(field, periodic)` | `app.drainage` | D8 flow routing: catchment area and downhill slope of every cell |
 | `carve_rivers(field, sea_level, params, seed, epsilon)` | `app.rivers` | Walk and carve river drunks; returns `(field, river_area, carved, reaching_sea)` |
-| `save_terrain_map(filename, field, gx, gy, title, sea_level, rivers, height_scale_m)` | `app.rendering` | Draw a terrain map PNG |
+| `save_terrain_map(filename, field, title, sea_level, width_km, rivers, height_scale_m, playable_km, dpi)` | `app.rendering` | Draw a terrain map PNG, `width_km` across with axes in km, heights optionally in metres, the playable area (`playable_km` across) outlined at the centre; the map sits at `MAP_RECT` in the figure |
 
 ## Testing
 
@@ -521,10 +562,11 @@ The tests (`tests/`) use small maps and run in about a second:
 
 | File | What it checks |
 |---|---|
-| `test_deposits.py` | The deposit sum matches exact evaluation to within the cutoff; on a wrap-around grid, shifting deposits by a period changes nothing and shifting by whole cells rolls the field; results are bit-for-bit identical on 1 or many threads; bad cutoffs are refused |
+| `test_deposits.py` | The deposit sum matches exact evaluation to within the cutoff, also on a wrap-around grid with bumps wider than the map; on a wrap-around grid, shifting deposits by a period changes nothing and shifting by whole cells rolls the field; results are bit-for-bit identical on 1 or many threads; bad cutoffs are refused |
 | `test_drunk.py` | A walk depends only on its own seed; steps have the right length; deposit shapes and amplitudes are as configured; homeward bias keeps drunks closer to home; out-of-range seeds are refused |
-| `test_terrain.py` | Resampling, Poisson-disk spacing, power-log spacing, sea fraction; hollow filling only raises cells and makes every cell drain (wrap-around and cut-out grids); river carving drains and is reproducible; the whole pipeline is reproducible, in [0, 1], has the requested sea and drains |
+| `test_terrain.py` | Resampling, Poisson-disk spacing, power-log spacing, sea fraction; hollow filling only raises cells and makes every cell drain (wrap-around and cut-out grids); river carving drains and is reproducible; the whole pipeline is reproducible, in [0, 1], has the requested sea and drains; re-centring moves the chosen cell to the centre and keeps every height and river |
 | `test_config.py` | The shipped config loads; a missing setting is named in the error; out-of-range values are refused |
+| `test_rendering.py` | A terrain map is saved as a PNG spanning 0 to the world width on both axes, labelled in km, with the map exactly at `MAP_RECT` (which the UI relies on to turn clicks into map positions) and the playable area outlined at the centre |
 
 "Drains" is checked strictly: every land cell must have a strictly lower neighbour, so following
 the way down can only end at the sea.
@@ -563,6 +605,13 @@ classDiagram
         +generate_terrain(config, seed, progress) TerrainResult
         +generate_height_field(config, seed, progress) tuple
         +build_layer(config, scale, rng) CompositeDrunk
+    }
+    class TerrainResult {
+        <<frozen dataclass>>
+        +field ndarray
+        +sea_level float
+        +river_area ndarray
+        +centred_on(cx, cy) TerrainResult
     }
     class config {
         +load_config(path) Config
@@ -612,6 +661,7 @@ classDiagram
         +carve_rivers(field, sea_level, params, seed, epsilon) tuple
     }
     class rendering {
+        +MAP_RECT
         +save_terrain_map(...) None
     }
     main --> pipeline : generate_terrain per seed
@@ -624,6 +674,8 @@ classDiagram
     pipeline ..> Drunk : creates
     pipeline ..> CompositeDrunk : one per scale
     pipeline ..> LayeredDrunk : combines, walks, evaluates
+    pipeline ..> TerrainResult : returns
+    ui ..> TerrainResult : centred_on per click
     pipeline --> sea
     pipeline --> rivers
     pipeline --> drainage : when rivers are off
@@ -653,7 +705,7 @@ drunk/
 │   ├── sea.py               # Sea level from the share of the map that is sea
 │   ├── drainage.py          # Hollow filling and D8 flow routing (numba)
 │   ├── rivers.py            # River drunks: walk the drainage, carve graded valleys (numba)
-│   └── rendering.py         # Terrain-map PNGs
+│   └── rendering.py         # Terrain-map PNGs (axes in km, heights optionally in m)
 ├── tests/                   # pytest suite
 ├── util/                    # Standalone tools
 │   ├── readme_figures.py            # Draws the README's explanatory figures

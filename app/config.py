@@ -99,6 +99,10 @@ class Cs2Config:
 
     # Height (m) spanned by the full 16-bit range at the editor's default height scale.
     max_height_m: float
+    # Side (km) of the world map; the whole generated map is drawn this wide.
+    world_width_km: float
+    # Side (km) of the playable area that a heightmap covers, at the centre of the world map.
+    playable_width_km: float
 
 
 @dataclass(frozen=True)
@@ -220,7 +224,13 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         ),
     )
     cs2_raw = _require(raw, "cs2", "")
-    cs2 = Cs2Config(max_height_m=float(_require(cs2_raw, "max_height_m", "cs2")))
+    cs2 = Cs2Config(
+        max_height_m=float(_require(cs2_raw, "max_height_m", "cs2")),
+        world_width_km=float(_require(cs2_raw, "world_width_km", "cs2")),
+        playable_width_km=float(_require(cs2_raw, "playable_width_km", "cs2")),
+    )
+    if not 0 < cs2.playable_width_km <= cs2.world_width_km:
+        raise ValueError("config needs 0 < cs2.playable_width_km <= cs2.world_width_km")
     ui_raw = _require(raw, "ui", "")
     ui = UiConfig(
         host=str(_require(ui_raw, "host", "ui")),

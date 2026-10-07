@@ -10,7 +10,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import ListedColormap
+from matplotlib.patches import Rectangle
 from matplotlib.ticker import MaxNLocator
+
+# Size of the terrain-map figure, in inches.
+FIGURE_SIZE = (7.0, 6.0)
+# Where the map itself sits in the figure: (left, bottom, width, height) as
+# fractions of the figure, measured from its lower-left corner. The width and
+# height make an exact square in inches (0.66 x 7 = 0.77 x 6 = 4.62 in), so the
+# map fills this box and a click on the image can be turned into a map position.
+MAP_RECT = (0.09, 0.115, 0.66, 0.77)
 
 
 def sea_and_land_colormap(sea_level: float, vmin: float, vmax: float, n: int = 512) -> ListedColormap:
@@ -33,8 +42,9 @@ def draw_rivers(ax: plt.Axes, area: np.ndarray, gx: np.ndarray, gy: np.ndarray) 
     a = np.log(area[iy, ix])
     t = (a - a.min()) / (a.max() - a.min()) if a.max() > a.min() else np.ones_like(a)
     order = np.argsort(t)
-    # Dot diameter in points, roughly one grid cell at the smallest and ~3 cells for the largest rivers.
-    cell_pt = ax.get_window_extent().width * 72.0 / ax.figure.dpi / len(gx)
+    # Dot diameter in points, roughly one grid cell at the smallest and ~3 cells for the largest rivers,
+    # but never under 0.6 pt for a cell, so rivers stay visible on a fine grid.
+    cell_pt = max(ax.get_window_extent().width * 72.0 / ax.figure.dpi / len(gx), 0.6)
     diameter = cell_pt * (0.8 + 2.2 * t[order])
     colours = np.zeros((len(order), 4))
     colours[:, :3] = (0.35, 0.75, 1.0)
@@ -45,12 +55,13 @@ def draw_rivers(ax: plt.Axes, area: np.ndarray, gx: np.ndarray, gy: np.ndarray) 
 def save_terrain_map(
     filename: Path | str | BinaryIO,
     field: np.ndarray,
-    gx: np.ndarray,
-    gy: np.ndarray,
     title: str,
     sea_level: float,
+    width_km: float,
     rivers: np.ndarray | None = None,
     height_scale_m: float | None = None,
+    playable_km: float | None = None,
+    dpi: int = 100,
 ) -> None:
     """Save ``field`` as a terrain map: sea below ``sea_level`` in blues, land above in terrain colours.
 
@@ -66,6 +77,12 @@ def save_terrain_map(
     height x ``height_scale_m``): the colour bar gets round-metre ticks and
     the sea-level marker shows its height in metres. Only the labels change;
     the picture is identical for any scale.
+
+    The map is drawn as a square ``width_km`` kilometres across, with both
+    axes labelled from 0 km at the lower-left corner, at ``MAP_RECT`` in a
+    ``FIGURE_SIZE`` figure saved at ``dpi``. With ``playable_km``, a square
+    that many km across is outlined at the centre of the map: the playable
+    area.
     """
     if isinstance(filename, (str, Path)):
         filename = Path(filename)
@@ -74,10 +91,14 @@ def save_terrain_map(
 
     # Fixed axes positions (rather than tight_layout), so the map stays in exactly
     # the same place whatever the labels: only the numbers change between scales.
-    fig = plt.figure(figsize=(7, 6))
-    ax = fig.add_axes((0.09, 0.08, 0.66, 0.84))
+    fig = plt.figure(figsize=FIGURE_SIZE)
+    ax = fig.add_axes(MAP_RECT)
     cax = fig.add_axes((0.80, 0.08, 0.03, 0.84))
-    extent = (gx[0], gx[-1], gy[0], gy[-1])
+    extent = (0.0, width_km, 0.0, width_km)
+    # Cell centres in km, for placing the river dots.
+    ny, nx = field.shape
+    gx = (np.arange(nx) + 0.5) * width_km / nx
+    gy = (np.arange(ny) + 0.5) * width_km / ny
     image = ax.imshow(
         field,
         origin="lower",
@@ -90,6 +111,12 @@ def save_terrain_map(
     ax.contour(field, levels=[sea_level], colors="navy", linewidths=0.5, origin="lower", extent=extent)
     if rivers is not None and np.any(rivers > 0):
         draw_rivers(ax, rivers, gx, gy)
+    if playable_km is not None:
+        corner = (width_km - playable_km) / 2.0
+        # A dark outline under a white one, so the square shows on sea and snow alike.
+        for colour, width in (("black", 2.4), ("white", 1.2)):
+            ax.add_patch(Rectangle((corner, corner), playable_km, playable_km, fill=False, edgecolor=colour,
+                                   linewidth=width))
     if height_scale_m is None:
         bar = fig.colorbar(image, cax=cax, label="normalised height")
         sea_label = "sea level"
@@ -108,9 +135,9 @@ def save_terrain_map(
     bar.ax.yaxis.set_label_position("left")
     bar.ax.axhline(sea_level, color="black", linewidth=1.0)
     bar.ax.text(1.6, sea_level, sea_label, transform=bar.ax.get_yaxis_transform(), va="center", fontsize=8)
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
+    ax.set_xlabel("x (km)")
+    ax.set_ylabel("y (km)")
     ax.set_title(title)
-    fig.savefig(filename, dpi=100, format="png")
+    fig.savefig(filename, dpi=dpi, format="png")
     plt.close(fig)
 

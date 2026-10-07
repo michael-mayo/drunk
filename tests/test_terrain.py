@@ -9,6 +9,7 @@ from app.config import Config
 from app.drainage import fill_hollows
 from app.layered_drunk import _resample_periodic
 from app.pipeline import generate_terrain
+from app.pipeline import playable_crop
 from app.rivers import RiverParams
 from app.rivers import carve_rivers
 from app.sampling import poisson_disk_points
@@ -102,3 +103,22 @@ def test_pipeline_without_sea_skips_draining(small_config: Config) -> None:
     config = replace(small_config, sea=replace(small_config.sea, water_fraction=0.0))
     result = generate_terrain(config, 41)
     assert result.state == "no sea" and result.river_area is None
+
+
+def test_centred_on_rolls_the_chosen_cell_to_the_centre(small_config: Config) -> None:
+    """Re-centring moves the chosen cell to the middle and keeps every height and river, just wrapped round."""
+    result = generate_terrain(small_config, 41)
+    n = result.field.shape[0]
+    moved = result.centred_on(10, 70)
+    assert moved.field[n // 2, n // 2] == result.field[70, 10]
+    np.testing.assert_array_equal(np.roll(moved.field, (70 - n // 2, 10 - n // 2), axis=(0, 1)), result.field)
+    np.testing.assert_array_equal(np.roll(moved.river_area, (70 - n // 2, 10 - n // 2), axis=(0, 1)), result.river_area)
+    assert moved.sea_level == result.sea_level and moved.rivers_carved == result.rivers_carved
+
+
+def test_playable_crop_is_the_central_quarter(small_config: Config) -> None:
+    """With the CS2 widths, the playable area is the central quarter of the world map's width."""
+    field = np.arange(96 * 96, dtype=float).reshape(96, 96)
+    crop = playable_crop(small_config, field)
+    assert crop.shape == (24, 24)
+    np.testing.assert_array_equal(crop, field[36:60, 36:60])

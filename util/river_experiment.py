@@ -37,6 +37,7 @@ from app.config import Config
 from app.config import load_config
 from app.drainage import fill_hollows
 from app.pipeline import generate_height_field
+from app.pipeline import playable_crop
 from app.rivers import carve_rivers
 from app.sea import sea_level
 from util.reference_terrain import square_crops
@@ -65,7 +66,7 @@ def cached_map(config: Config, seed: int) -> np.ndarray:
     path = CACHE_DIR / f"seed{seed}_{key}.npy"
     if path.exists():
         return np.load(path)
-    _, _, field = generate_height_field(config, seed)
+    _, field = generate_height_field(config, seed)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     np.save(path, field)
     return field
@@ -82,14 +83,21 @@ def run_pipeline(field: np.ndarray, config: Config, variant: dict[str, Any], see
 
 
 def _task(args: tuple[str, int, np.ndarray, dict[str, Any], str]) -> tuple[str, int, list[float], np.ndarray]:
-    """Worker: run one variant on one map and return its statistics and the final map."""
+    """Worker: run one variant on one world map; returns its statistics and the final playable area.
+
+    Draining and rivers work on the whole wrap-around world. Channel
+    concavity is measured over the world too (it needs whole catchments);
+    the other statistics, which are relative to the size of the area, are
+    measured on the central playable area, the same size as the real-terrain
+    crops.
+    """
     name, seed, field, variant, config_path = args
     config = load_config(config_path)
     final = run_pipeline(field, config, variant, seed)
     sea = final < sea_level(field, config.sea.water_fraction)
-    stats = asdict(terrain_stats(final))
+    stats = asdict(terrain_stats(playable_crop(config, final)))
     stats["concavity"] = drainage_stats(final, sea, periodic=True).concavity
-    return name, seed, [stats[k] for k in STAT_NAMES], final
+    return name, seed, [stats[k] for k in STAT_NAMES], playable_crop(config, final)
 
 
 def nature_stats(ref: dict[str, Any], grid_points: int) -> np.ndarray:
@@ -126,7 +134,8 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     prefix = exp["name"]
 
-    nature = nature_stats(exp["reference"], config.plot.grid_points)
+    # Real-terrain crops are resampled to the playable area's grid size.
+    nature = nature_stats(exp["reference"], playable_crop(config, np.empty((config.plot.grid_points,) * 2)).shape[0])
     nat_mean, nat_sd = nature.mean(axis=0), nature.std(axis=0)
 
     maps = {seed: cached_map(config, seed) for seed in exp["seeds"]}

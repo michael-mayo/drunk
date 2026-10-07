@@ -18,8 +18,10 @@ layers:
   h: 0.5
 
 composite:
-  # Drunks in each layer's CompositeDrunk.
-  drunks: 200
+  # Drunks in each layer's CompositeDrunk. 3200 over the 384 x 384 world is
+  # 200 per 96 x 96 area (one 14.336 km playable area), the density the
+  # terrain statistics were tuned at; scale it with the domain's area.
+  drunks: 3200
   # Within a layer, drunks are identical except for their random seed, home and
   # kappa_max (see the walk section). kappa_max uses power-log spacing from kappa_max_start to
   # kappa_max_end: member i of n gets
@@ -67,9 +69,13 @@ plot:
   # drunks start at Poisson-disk sampled points (no two closer than a minimum
   # spacing, chosen automatically from the number of drunks, measured across
   # the edges) in this square, and are biased back towards their start point.
-  domain: 96.0
+  # The whole map is a Cities: Skylines II world map (cs2.world_width_km
+  # across): 96 units, the area the terrain was tuned at, are one 14.336 km
+  # playable area, so the 57.344 km world is 384 units.
+  domain: 384.0
   # Resolution (points per side) of the grid used to render the summed deposits.
-  grid_points: 400
+  # 1600 keeps 4.17 points per unit, so a playable area is 400 x 400 points.
+  grid_points: 1600
   # Each Gaussian is only evaluated where it exceeds cutoff x its peak, i.e.
   # within sqrt(2 ln(1/cutoff)) standard deviations of its centre (~4.08 sd
   # for 1/4096). Skipping the negligible tails makes rendering much faster.
@@ -102,7 +108,8 @@ rivers:
   # concavity goes from ~0.10 (drained only) to ~0.33, matching real terrain.
   enabled: true
   # Number of river sources (Poisson-disk sampled; those in the sea are dropped).
-  sources: 100
+  # 1600 over the world is 100 per playable area, the tuned density.
+  sources: 1600
   # Sources must be this far above sea level (fraction of the land's height range).
   min_source_height: 0.05
   # Gaussian smoothing (cells) of the downstream-direction field the drunks follow.
@@ -124,6 +131,13 @@ cs2:
   # Cities: Skylines II heightmaps are 4096 x 4096, 16-bit greyscale: values
   # 0-65535 span 0 to this height (m) at the editor's default height scale.
   max_height_m: 4096.0
+  # The whole generated map (plot.domain) is a world map this many km across:
+  # CS2's optional world map, also 4096 x 4096 (14 m per pixel), is 57,344 m.
+  world_width_km: 57.344
+  # The playable area, which a heightmap covers (4096 x 4096, 3.5 m per pixel),
+  # is 14,336 m across, the central quarter of the world map. In the web UI
+  # you pick where on the world it lies.
+  playable_width_km: 14.336
 
 ui:
   # Web UI (app/ui.py): served at http://<host>:<port>/.

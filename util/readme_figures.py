@@ -6,9 +6,9 @@ in ``config.yaml``:
 - ``drunk_walks.png``: three single drunks with weak to strong homeward bias,
   their paths drawn over the deposits they leave.
 - ``layers.png``: the four layers of one map, each scaled and weighted as in
-  the sum, and the combined height field.
-- ``stages.png``: one map after each post-processing stage: sea level,
-  drained, and rivers carved.
+  the sum, and the combined height field, in the central playable area.
+- ``stages.png``: the central playable area of one map after each
+  post-processing stage: sea level, drained, and rivers carved.
 
 The seed maps shown in the README are written by ``app.main``.
 """
@@ -36,6 +36,7 @@ from app.drainage import fill_hollows
 from app.drunk import Drunk
 from app.drunk import walk_drunks
 from app.pipeline import generate_height_field
+from app.pipeline import playable_crop
 from app.rendering import draw_rivers
 from app.rendering import sea_and_land_colormap
 from app.rivers import carve_rivers
@@ -79,22 +80,27 @@ def drunk_walks(config: Config, path: Path) -> None:
 
 
 def layers(config: Config, path: Path) -> None:
-    """Each weighted layer of one map on a shared colour scale, and their sum scaled to [0, 1].
+    """Each weighted layer of one map's playable area on a shared colour scale, and their sum.
 
     Each layer is drawn minus its mean, which only shifts the sum by a
     constant (removed when it is scaled to [0, 1]), so the panels show relief
     rather than each layer's offset.
     """
-    terrain, _, field = generate_height_field(config, FIGURE_SEED)
-    fields = [f - f.mean() for f in terrain.layer_fields(config.plot.domain, config.plot.grid_points, config.plot.cutoff)]
+    terrain, field = generate_height_field(config, FIGURE_SEED)
+    fields = [playable_crop(config, f - f.mean())
+              for f in terrain.layer_fields(config.plot.domain, config.plot.grid_points, config.plot.cutoff)]
+    field = playable_crop(config, field)
     hi = max(np.abs(f).max() for f in fields)
     lo = -hi
     fig, axes = plt.subplots(1, len(fields) + 1, figsize=(3.2 * (len(fields) + 1), 3.6))
     for ax, f, scale in zip(axes, fields, terrain.scales):
         ax.imshow(f, origin="lower", cmap="terrain", vmin=lo, vmax=hi)
         ax.set_title(f"scale {scale:g} (weight {(scale / min(terrain.scales)) ** terrain.h:.2f})")
-    axes[-1].imshow(field, origin="lower", cmap="terrain")
-    axes[-1].set_title("sum, scaled to [0, 1]")
+    # The sum is centred and scaled symmetrically like the layers, so the same colours mean the same thing.
+    total = field - field.mean()
+    edge = np.abs(total).max()
+    axes[-1].imshow(total, origin="lower", cmap="terrain", vmin=-edge, vmax=edge)
+    axes[-1].set_title("sum (the height field)")
     for ax in axes:
         ax.set_xticks([])
         ax.set_yticks([])
@@ -104,16 +110,17 @@ def layers(config: Config, path: Path) -> None:
 
 
 def stages(config: Config, path: Path) -> None:
-    """One map after setting sea level, after draining (filled cells marked), and after carving rivers."""
-    _, _, raw = generate_height_field(config, FIGURE_SEED)
+    """The playable area of one map after setting sea level, after draining (filled cells marked), and after carving rivers."""
+    _, raw = generate_height_field(config, FIGURE_SEED)
     level = sea_level(raw, config.sea.water_fraction)
     sea = raw < level
     drained = fill_hollows(raw, sea, periodic=True, epsilon=config.drainage.epsilon)
     carved, river, _, _ = carve_rivers(raw, level, config.rivers.params, FIGURE_SEED, epsilon=config.drainage.epsilon)
+    raw, drained, carved, river = (playable_crop(config, f) for f in (raw, drained, carved, river))
     n = raw.shape[0]
     axis = np.arange(n)
     fig, axes = plt.subplots(1, 3, figsize=(12, 4.3))
-    titles = ("1. sea level (15% of the map)", "2. hollows filled (red) to drain", "3. rivers carved")
+    titles = ("1. sea level (15% of the world)", "2. hollows filled (red) to drain", "3. rivers carved")
     for ax, f, title in zip(axes, (raw, drained, carved), titles):
         ax.imshow(f, origin="lower", cmap=sea_and_land_colormap(level, float(f.min()), float(f.max())))
         ax.contour(f, levels=[level], colors="navy", linewidths=0.5)

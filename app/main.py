@@ -62,8 +62,8 @@ def main() -> None:
         elif result.state == "drained":
             print("  filled hollows: every land cell now drains to the sea")
         filename = config.paths.output_dir / f"terrain_seed{seed}.png"
-        save_terrain_map(filename, result.field, result.grid, result.grid, result.title, result.sea_level,
-                         rivers=result.river_area)
+        save_terrain_map(filename, result.field, result.title, result.sea_level, config.cs2.world_width_km,
+                         rivers=result.river_area, playable_km=config.cs2.playable_width_km)
         print(f"Saved {filename}")
 
     host = "localhost" if config.ui.host in ("127.0.0.1", "0.0.0.0") else config.ui.host
