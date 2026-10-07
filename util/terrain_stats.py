@@ -154,6 +154,9 @@ def drainage_stats(z: np.ndarray, outlets: np.ndarray, periodic: bool) -> Draina
     area, slope = flow_accumulation(filled, periodic)
     channel = land & (area >= CHANNEL_MIN_AREA) & (slope > CHANNEL_MIN_SLOPE * relief)
     a, s = area[channel], slope[channel]
+    if a.size == 0:
+        # No channels (e.g. a window that is all sea): no slope-area relation to fit.
+        return DrainageStats(concavity=float("nan"), depression_fraction=depression_fraction)
     edges = np.geomspace(CHANNEL_MIN_AREA, max(a.max(), CHANNEL_MIN_AREA * 2), 13)
     xs, ys = [], []
     for lo, hi in zip(edges[:-1], edges[1:]):

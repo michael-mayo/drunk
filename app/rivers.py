@@ -59,6 +59,8 @@ class RiverParams:
     valley_width: float = 0.03
     # Narrowest valley sigma, in cells.
     min_valley_sigma: float = 1.0
+    # Half-width (cells) of the flat valley floor = floor_width * sqrt(catchment cells); 0 = no floor.
+    floor_width: float = 0.0
     # Steps without getting closer to the sea before switching to steepest descent.
     stall_steps: int = 50
 
@@ -195,7 +197,7 @@ def _carve(
     bed: np.ndarray,
     sigma: np.ndarray,
 ) -> None:
-    """Lower ``h`` towards the riverbed along a path, with a Gaussian valley cross-section.
+    """Lower ``h`` towards the riverbed along a path, with a Gaussian (V-shaped) valley cross-section.
 
     At each path cell, terrain within 3 sigma is lowered to
     ``bed + (h - bed) * (1 - exp(-r^2 / (2 sigma^2)))``: down to the bed on
@@ -222,6 +224,55 @@ def _carve(
 
 
 @numba.njit(cache=True)
+def _carve_floodplains(
+    h: np.ndarray,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    bed: np.ndarray,
+    sigma: np.ndarray,
+    floor: np.ndarray,
+) -> None:
+    """Lower ``h`` to flat-floored valleys around every river cell of the network at once.
+
+    Each cell near a river is assigned to the one river cell whose floor edge
+    is nearest (ties: the nearest channel), and lowered towards that river
+    cell's bed: to the bed within ``floor`` cells of the channel (the flat
+    valley floor), then with Gaussian sides over ``sigma`` cells beyond it.
+    Because every cell takes the bed of the river point beside it, the floor
+    follows the riverbed smoothly downstream rather than stepping. Terrain
+    already below the bed is left alone.
+    """
+    n_y, n_x = h.shape
+    edge = np.full((n_y, n_x), np.inf)
+    dist2 = np.full((n_y, n_x), np.inf)
+    owner = -np.ones((n_y, n_x), dtype=np.int64)
+    for i in range(xs.shape[0]):
+        reach = floor[i] + 3.0 * sigma[i]
+        r = int(math.ceil(reach))
+        for oy in range(-r, r + 1):
+            for ox in range(-r, r + 1):
+                r2 = float(ox * ox + oy * oy)
+                if r2 > reach * reach:
+                    continue
+                py = (ys[i] + oy) % n_y
+                px = (xs[i] + ox) % n_x
+                beyond = max(math.sqrt(r2) - floor[i], 0.0)
+                if beyond < edge[py, px] or (beyond == edge[py, px] and r2 < dist2[py, px]):
+                    edge[py, px] = beyond
+                    dist2[py, px] = r2
+                    owner[py, px] = i
+    for py in range(n_y):
+        for px in range(n_x):
+            i = owner[py, px]
+            if i < 0:
+                continue
+            above = h[py, px] - bed[i]
+            if above > 0.0:
+                d = edge[py, px]
+                h[py, px] = bed[i] + above * (1.0 - math.exp(-d * d / (2.0 * sigma[i] * sigma[i])))
+
+
+@numba.njit(cache=True)
 def _carve_rivers(
     h: np.ndarray,
     sea: np.ndarray,
@@ -240,12 +291,15 @@ def _carve_rivers(
     concavity: float,
     valley_width: float,
     min_valley_sigma: float,
+    floor_width: float,
     stall_steps: int,
 ) -> tuple[np.ndarray, int, int]:
     """Walk and carve every river in turn; returns (river catchment areas, rivers carved, rivers reaching the sea).
 
     The first result holds each river cell's catchment area (in cells) and 0
-    elsewhere.
+    elsewhere. With ``floor_width`` 0, each river's V-shaped valley is carved
+    as soon as it is walked; otherwise the whole network's flat-floored
+    valleys are carved together at the end (``_carve_floodplains``).
     """
     np.random.seed(seed)
     n_y, n_x = h.shape
@@ -255,6 +309,12 @@ def _carve_rivers(
     carved = 0
     to_sea = 0
     max_steps = 4 * (n_x + n_y)
+    # Every carved river cell, for carving flat-floored valleys at the end.
+    all_x = []
+    all_y = []
+    all_bed = []
+    all_sigma = []
+    all_floor = []
     for r in range(src_x.shape[0]):
         sx = src_x[r]
         sy = src_y[r]
@@ -281,9 +341,11 @@ def _carve_rivers(
         k = (top - mouth) / total
         bed = np.empty(n)
         sigma = np.empty(n)
+        floor = np.empty(n)
         for i in range(n):
             bed[i] = mouth + k * weights[i]
             sigma[i] = max(valley_width * math.sqrt(max(area[ys[i], xs[i]], 1.0)), min_valley_sigma)
+            floor[i] = floor_width * math.sqrt(max(area[ys[i], xs[i]], 1.0))
         # Never above the terrain, and strictly descending downstream.
         for i in range(n):
             bed[i] = min(bed[i], h[ys[i], xs[i]])
@@ -291,7 +353,15 @@ def _carve_rivers(
                 bed[i] = min(bed[i], bed[i - 1] - 1e-7)
         # The last cell is the sea or the river being joined: don't carve or mark it.
         last = n - 1
-        _carve(h, xs[:last], ys[:last], bed[:last], sigma[:last])
+        if floor_width > 0.0:
+            for i in range(last):
+                all_x.append(xs[i])
+                all_y.append(ys[i])
+                all_bed.append(bed[i])
+                all_sigma.append(sigma[i])
+                all_floor.append(floor[i])
+        else:
+            _carve(h, xs[:last], ys[:last], bed[:last], sigma[:last])
         for i in range(last):
             river[ys[i], xs[i]] = True
             river_area[ys[i], xs[i]] = max(area[ys[i], xs[i]], 1.0)
@@ -299,6 +369,9 @@ def _carve_rivers(
         carved += 1
         if end == 1:
             to_sea += 1
+    if floor_width > 0.0 and len(all_x) > 0:
+        _carve_floodplains(h, np.array(all_x), np.array(all_y), np.array(all_bed), np.array(all_sigma),
+                           np.array(all_floor))
     return river_area, carved, to_sea
 
 
@@ -356,7 +429,7 @@ def carve_rivers(
     river, n_carved, n_sea = _carve_rivers(
         carved, sea, sea_level, sx, sy, ux, uy, rdy, rdx, distance, area, seed,
         params.kappa, params.inertia, params.concavity, params.valley_width,
-        params.min_valley_sigma, params.stall_steps,
+        params.min_valley_sigma, params.floor_width, params.stall_steps,
     )
     carved = fill_hollows(carved, carved < sea_level, periodic=True, epsilon=epsilon)
     return carved, river, n_carved, n_sea

@@ -17,8 +17,8 @@ def small_config() -> Config:
     config = load_config(DEFAULT_CONFIG_PATH)
     return replace(
         config,
-        # The four fine layers only, with few drunks.
-        layers=tuple(replace(layer, drunks=30) for layer in config.layers[:4]),
+        # The four fine layers only, with few drunks, all spread evenly.
+        layers=tuple(replace(layer, drunks=30, born_on_parent=0.0) for layer in config.layers[:4]),
         walk=replace(config.walk, num_steps=200),
         plot=replace(config.plot, domain=96.0, grid_points=96),
         rivers=replace(config.rivers, params=replace(config.rivers.params, sources=20)),

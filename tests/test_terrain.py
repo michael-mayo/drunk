@@ -122,3 +122,52 @@ def test_playable_crop_is_the_central_quarter(small_config: Config) -> None:
     crop = playable_crop(small_config, field)
     assert crop.shape == (24, 24)
     np.testing.assert_array_equal(crop, field[36:60, 36:60])
+
+
+def test_drunks_born_on_parent_paths_take_homes_where_the_parents_deposited() -> None:
+    """A share of drunks move to parent deposit centres (wrapped onto the map), favouring strongly biased parents."""
+    from app.composite_drunk import CompositeDrunk
+    from app.deposits import Deposits
+    from app.drunk import Drunk
+    from app.pipeline import born_on_paths
+
+    # Two parents of one step each: a wanderer (kappa_max 0.1) that stepped to x = 106 (wraps to 10), y = -20,
+    # and a strongly biased one (kappa_max 1.0) that stepped to x = -30, y = 40.
+    parent = CompositeDrunk([Drunk(1, kappa_max=0.1), Drunk(2, kappa_max=1.0)])
+    parent.deposits = Deposits(np.array([106.0, -30.0]), np.array([-20.0, 40.0]), np.zeros(2), np.ones(2), np.ones(2),
+                               np.ones(2))
+    parent.num_steps = 1
+    drunks = [Drunk(i, kappa_max=0.1 * i, home=(float(i), 5.0)) for i in range(2000)]
+    born = born_on_paths(drunks, parent, 0.3, 0.0, 96.0, np.random.default_rng(0))
+    moved = [b for d, b in zip(drunks, born) if b.home != d.home]
+    assert len(moved) == pytest.approx(600, abs=60)
+    assert all(b.home in ((10.0, -20.0), (-30.0, 40.0)) for b in moved)
+    assert all(b.seed == d.seed and b.kappa_max == d.kappa_max for d, b in zip(drunks, born))
+    # Alike parents share the births; with bias power 2 the strongly biased parent gets ~100x the wanderer's.
+    on_wanderer = np.mean([b.home == (10.0, -20.0) for b in moved])
+    assert on_wanderer == pytest.approx(0.5, abs=0.07)
+    favoured = [b for d, b in zip(drunks, born_on_paths(drunks, parent, 0.3, 2.0, 96.0, np.random.default_rng(0)))
+                if b.home != d.home]
+    assert np.mean([b.home == (10.0, -20.0) for b in favoured]) < 0.03
+
+
+def test_born_on_parent_world_generates_and_is_reproducible(small_config: Config) -> None:
+    """A world whose fine drunks are born on a coarse layer's paths generates, and the same seed gives the same map."""
+    coarse = replace(small_config.layers[3], scale=8.0, drunks=12, weight=4.0, born_on_parent=0.0)
+    fine = tuple(replace(layer, born_on_parent=0.8) for layer in small_config.layers)
+    config = replace(small_config, layers=fine + (coarse,))
+    a, b = generate_terrain(config, 41), generate_terrain(config, 41)
+    np.testing.assert_array_equal(a.field, b.field)
+    # The scale-4 layer's drunks are born on the scale-8 layer's paths; its reference is the evenly spread layer.
+    assert a.terrain.references[3] is not None and a.terrain.references[4] is None
+
+
+def test_flat_valley_floors_drain_and_lower_the_land(small_config: Config) -> None:
+    """With flat valley floors, rivers still drain the map, and carving only ever lowers land compared with V valleys."""
+    field = rough_field(4, 128)
+    level = sea_level(field, 0.15)
+    v_valleys, _, _, _ = carve_rivers(field, level, RiverParams(sources=30), seed=7)
+    floors, _, n_carved, _ = carve_rivers(field, level, RiverParams(sources=30, floor_width=0.1), seed=7)
+    assert n_carved > 0
+    assert_drains(floors, floors < level, periodic=True)
+    assert floors.mean() < v_valleys.mean()

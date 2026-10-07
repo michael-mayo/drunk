@@ -80,8 +80,8 @@ def playable_crop(config: Config, field: np.ndarray) -> np.ndarray:
     return field[n // 2 - half : n // 2 + half, n // 2 - half : n // 2 + half]
 
 
-def build_layer(config: Config, layer: LayerConfig, rng: np.random.Generator) -> CompositeDrunk:
-    """Create the composite for one ``layer`` of the height map.
+def layer_drunks(config: Config, layer: LayerConfig, rng: np.random.Generator) -> list[Drunk]:
+    """Create the drunks for one ``layer`` of the height map, at evenly spread (Poisson-disk) homes.
 
     Its drunks are identical except for a seed and home drawn from ``rng`` and
     a power-log spaced kappa_max; step size and r0 are multiplied by the
@@ -105,7 +105,7 @@ def build_layer(config: Config, layer: LayerConfig, rng: np.random.Generator) ->
         )
         for seed, kappa_max, home in zip(seeds, kappa_maxes, homes)
     ]
-    return CompositeDrunk(drunks)
+    return drunks
 
 
 def set_threads(config: Config) -> None:
@@ -139,15 +139,84 @@ def generate_height_field(
     set_threads(config)
     report("build")(0.0, "building layers of drunks")
     rng = np.random.default_rng(seed)
-    layers = [build_layer(config, layer, rng) for layer in config.layers]
-    terrain = LayeredDrunk(layers, [layer.scale for layer in config.layers], [layer.weight for layer in config.layers])
+    drunks = [layer_drunks(config, layer, rng) for layer in config.layers]
+    scales = [layer.scale for layer in config.layers]
+    weights = [layer.weight for layer in config.layers]
+    finest = min(scales)
+    composites: list[CompositeDrunk | None] = [None] * len(drunks)
+    references: list[CompositeDrunk | None] = [None] * len(drunks)
+    fields: list[np.ndarray | None] = [None] * len(drunks)
 
+    # Largest scale first, so each layer's parent (the next larger layer) has walked before its drunks are born.
+    order = sorted(range(len(drunks)), key=lambda j: -scales[j])
+    birth_rng = np.random.default_rng([seed, 1])
     report("walk")(0.0, "walking drunks")
-    terrain.walk(config.walk.num_steps, progress=report("walk"))
-
     report("density")(0.0, "evaluating Gaussian deposits")
-    field = terrain.density(config.plot.domain, config.plot.grid_points, config.plot.cutoff, progress=report("density"))
-    return terrain, field
+    for done, j in enumerate(order):
+        layer = config.layers[j]
+        parent = parent_layer(config.layers, j)
+        if layer.born_on_parent > 0 and parent is not None:
+            # The same drunks spread evenly (their Poisson-disk homes) scale the layer.
+            references[j] = CompositeDrunk(drunks[j])
+            composites[j] = CompositeDrunk(born_on_paths(drunks[j], composites[parent], layer.born_on_parent,
+                                                         layer.parent_bias_power, config.plot.domain, birth_rng))
+        else:
+            composites[j] = CompositeDrunk(drunks[j])
+        single = LayeredDrunk([composites[j]], [scales[j]], [weights[j]], [references[j]], finest_scale=finest)
+        single.walk(config.walk.num_steps)
+        report("walk")((done + 1) / len(order), f"walked layer {done + 1} of {len(order)} (scale {scales[j]:g})")
+        fields[j] = single.layer_fields(config.plot.domain, config.plot.grid_points, config.plot.cutoff)[0]
+        report("density")((done + 1) / len(order), f"evaluated layer {done + 1} of {len(order)} (scale {scales[j]:g})")
+    terrain = LayeredDrunk(composites, scales, weights, references, finest_scale=finest)
+    total = np.sum(fields, axis=0)
+    lo, hi = total.min(), total.max()
+    return terrain, (total - lo) / (hi - lo) if hi > lo else np.zeros_like(total)
+
+
+def parent_layer(layers: tuple[LayerConfig, ...], j: int) -> int | None:
+    """Index of layer ``j``'s parent: the layer with the next larger scale (None for the largest)."""
+    larger = [i for i, layer in enumerate(layers) if layer.scale > layers[j].scale]
+    return min(larger, key=lambda i: layers[i].scale) if larger else None
+
+
+def born_on_paths(
+    drunks: list[Drunk],
+    parent: CompositeDrunk,
+    share: float,
+    bias_power: float,
+    domain: float,
+    rng: np.random.Generator,
+) -> list[Drunk]:
+    """The same drunks with a ``share`` of them moved to homes on the walked ``parent`` drunks' paths.
+
+    Each moved drunk picks a parent drunk with probability proportional to
+    ``kappa_max ** bias_power`` (0 = any parent alike), then one of that
+    parent's deposits with probability proportional to its amplitude, and
+    takes the deposit's centre, wrapped into the map of side ``domain``, as
+    its home. Strongly biased parents stay near home and pile up deposits
+    into peaks; weakly biased ones wander widely, lowlands included. So the
+    higher ``bias_power``, the more the moved drunks, and their texture,
+    gather on the mountains. The rest keep their evenly spread homes.
+    Everything else about each drunk (seed, bias, step and deposit sizes) is
+    unchanged.
+    """
+    moved = rng.random(len(drunks)) < share
+    deposits = parent.deposits
+    steps = parent.num_steps
+    bias = np.array([d.kappa_max for d in parent.drunks]) ** bias_power
+    weights = np.repeat(bias, steps) * deposits.amplitude
+    picks = rng.choice(len(weights), size=int(moved.sum()), p=weights / weights.sum())
+    xs = (deposits.x[picks] + domain / 2.0) % domain - domain / 2.0
+    ys = (deposits.y[picks] + domain / 2.0) % domain - domain / 2.0
+    born = []
+    k = 0
+    for drunk, move in zip(drunks, moved):
+        if move:
+            born.append(replace(drunk, home=(float(xs[k]), float(ys[k]))))
+            k += 1
+        else:
+            born.append(drunk)
+    return born
 
 
 def generate_terrain(

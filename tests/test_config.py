@@ -52,7 +52,10 @@ def test_missing_setting_is_named(tmp_path: Path) -> None:
         {"sea": {"water_fraction": 0.99}},
         {"cs2": {"playable_width_km": 0}},
         {"layers": [{"scale": 0.0, "drunks": 10, "kappa_max_start": 0.1, "kappa_max_end": 0.2, "kappa_max_power": 1.0,
-                     "weight": 1.0}]},
+                     "weight": 1.0, "born_on_parent": 0.0, "parent_bias_power": 0.0}]},
+        # The largest layer has no larger parent to be born on.
+        {"layers": [{"scale": 1.0, "drunks": 10, "kappa_max_start": 0.1, "kappa_max_end": 0.2, "kappa_max_power": 1.0,
+                     "weight": 1.0, "born_on_parent": 0.5, "parent_bias_power": 0.0}]},
         {"layers": []},
         {"layers": [0.5, 1.0]},
         {"cs2": {"playable_width_km": 60.0}},

@@ -31,6 +31,12 @@ class LayerConfig:
     kappa_max_power: float
     # The layer is scaled to unit standard deviation, then multiplied by this.
     weight: float
+    # Share of the drunks (0-1) born on the paths of the next larger layer's drunks rather than at
+    # evenly spread homes, so they gather on the high ground the larger drunks build. 0 = all spread evenly.
+    born_on_parent: float
+    # Those drunks pick a parent drunk with probability proportional to its kappa_max ** parent_bias_power:
+    # higher favours the strongly biased parents that build peaks over the wanderers. 0 = any parent alike.
+    parent_bias_power: float
 
 
 @dataclass(frozen=True)
@@ -179,14 +185,20 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
             kappa_max_end=float(_require(entry, "kappa_max_end", f"layers[{i}]")),
             kappa_max_power=float(_require(entry, "kappa_max_power", f"layers[{i}]")),
             weight=float(_require(entry, "weight", f"layers[{i}]")),
+            born_on_parent=float(_require(entry, "born_on_parent", f"layers[{i}]")),
+            parent_bias_power=float(_require(entry, "parent_bias_power", f"layers[{i}]")),
         )
         for i, entry in enumerate(layers_raw)
     )
     if not layers:
         raise ValueError("config needs at least one entry in layers")
     for i, layer in enumerate(layers):
-        if layer.scale <= 0 or layer.drunks < 1 or layer.weight < 0:
-            raise ValueError(f"config needs layers[{i}] to have scale > 0, drunks >= 1 and weight >= 0")
+        if (layer.scale <= 0 or layer.drunks < 1 or layer.weight < 0 or not 0 <= layer.born_on_parent <= 1
+                or layer.parent_bias_power < 0):
+            raise ValueError(f"config needs layers[{i}] to have scale > 0, drunks >= 1, weight >= 0, "
+                             "born_on_parent in [0, 1] and parent_bias_power >= 0")
+    if max(layers, key=lambda layer: layer.scale).born_on_parent > 0:
+        raise ValueError("config needs the largest-scale layer to have born_on_parent 0: it has no larger parent")
     parallel_raw = _require(raw, "parallel", "")
     threads = _require(parallel_raw, "threads", "parallel")
     parallel = ParallelConfig(threads=None if threads is None else int(threads))
@@ -220,7 +232,8 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         epsilon=float(_require(drainage_raw, "epsilon", "drainage")),
     )
     rivers_raw = _require(raw, "rivers", "")
-    float_keys = ("min_source_height", "direction_smoothing", "kappa", "inertia", "concavity", "valley_width", "min_valley_sigma")
+    float_keys = ("min_source_height", "direction_smoothing", "kappa", "inertia", "concavity", "valley_width",
+                  "min_valley_sigma", "floor_width")
     int_keys = ("sources", "stall_steps")
     rivers = RiversConfig(
         enabled=bool(_require(rivers_raw, "enabled", "rivers")),

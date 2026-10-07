@@ -59,8 +59,25 @@ class LayeredDrunk:
     seamlessly. Drunks' homes should be sampled inside the map.
     """
 
-    def __init__(self, layers: list[CompositeDrunk], scales: list[float], weights: list[float]) -> None:
-        """Combine ``layers`` (one composite per entry of ``scales``), each scaled to unit std and multiplied by its weight."""
+    def __init__(
+        self,
+        layers: list[CompositeDrunk],
+        scales: list[float],
+        weights: list[float],
+        references: list[CompositeDrunk | None] | None = None,
+        finest_scale: float | None = None,
+    ) -> None:
+        """Combine ``layers`` (one composite per entry of ``scales``), each scaled to unit std and multiplied by its weight.
+
+        ``references``, if given, holds for each layer an optional composite
+        whose field's standard deviation scales the layer instead of the
+        layer's own. A layer whose drunks were born on the paths of larger
+        drunks (clustered on high ground, see ``app.pipeline``) passes the
+        same drunks spread evenly here, so it is scaled like an even layer
+        and its drunks keep their full relief where they gather. ``finest_scale`` sets the scale whose grid is the full
+        resolution (default: the smallest of ``scales``), so a subset of a
+        map's layers is evaluated on the same grids as the whole map.
+        """
         if not layers or not len(layers) == len(scales) == len(weights):
             raise ValueError("LayeredDrunk needs one or more layers, each with a scale and a weight")
         if min(scales) <= 0:
@@ -68,6 +85,10 @@ class LayeredDrunk:
         self.layers = list(layers)
         self.scales = [float(s) for s in scales]
         self.weights = [float(w) for w in weights]
+        self.references = list(references) if references is not None else [None] * len(layers)
+        if len(self.references) != len(self.layers):
+            raise ValueError("LayeredDrunk needs one reference (or None) per layer")
+        self.finest_scale = float(finest_scale) if finest_scale is not None else min(self.scales)
 
     @property
     def num_steps(self) -> int:
@@ -82,12 +103,14 @@ class LayeredDrunk:
         """
         for i, (layer, scale) in enumerate(zip(self.layers, self.scales)):
             layer.walk(num_steps)
+            if self.references[i] is not None:
+                self.references[i].walk(num_steps)
             if progress is not None:
                 progress((i + 1) / len(self.layers), f"walked layer {i + 1} of {len(self.layers)} (scale {scale:g})")
 
     def layer_grid_points(self, scale: float, grid_points: int) -> int:
         """Points per side of the coarser grid on which the layer at ``scale`` is evaluated."""
-        return max(16, round(grid_points / (scale / min(self.scales))))
+        return max(16, round(grid_points / (scale / self.finest_scale)))
 
     def layer_fields(
         self,
@@ -99,15 +122,21 @@ class LayeredDrunk:
         """Each layer's weighted contribution to the height field, on a ``grid_points`` x ``grid_points`` wrap-around grid.
 
         Layer ``j`` is evaluated on its coarser grid, resampled, scaled to
-        unit standard deviation and multiplied by its weight; the
+        unit standard deviation (its reference's, if it has one) and
+        multiplied by its weight; the
         height field is their sum. ``progress``, if given, is called after
         each layer with the fraction of layers done and a message.
         """
         fields = []
         for i, (layer, scale) in enumerate(zip(self.layers, self.scales)):
-            coarse = layer.density(domain, self.layer_grid_points(scale, grid_points), cutoff)
+            n = self.layer_grid_points(scale, grid_points)
+            coarse = layer.density(domain, n, cutoff)
             field = _resample_periodic(coarse, grid_points)
-            sd = field.std()
+            reference = self.references[i]
+            if reference is None:
+                sd = field.std()
+            else:
+                sd = _resample_periodic(reference.density(domain, n, cutoff), grid_points).std()
             fields.append(self.weights[i] * field / sd if sd > 0 else np.zeros_like(field))
             if progress is not None:
                 progress((i + 1) / len(self.layers), f"evaluated layer {i + 1} of {len(self.layers)} (scale {scale:g})")

@@ -23,13 +23,24 @@ seeds: [41, 42, 43]
 # are ~4 km across and the 57 km world looks uniform. A scale-16 weight of 6
 # (rather than 8) keeps the continents and keeps every playable-sized window
 # close to real terrain (check with util/nature_check.py).
+#
+# born_on_parent: the share of a layer's drunks (0-1) born on the paths of
+# the next larger layer's drunks (home = one of the parent layer's deposit
+# centres) instead of at evenly spread homes, so they gather on the high
+# ground the larger drunks build. Layers are built largest first. 0 = all
+# spread evenly; the largest layer must be 0. parent_bias_power: a born drunk
+# picks its parent drunk with probability proportional to the parent's
+# kappa_max ** parent_bias_power, favouring the strongly biased parents that
+# stay home and build peaks over the wanderers that criss-cross the lowlands
+# (0 = any parent alike). 4 keeps fine texture on the mountains and leaves
+# lowlands and coasts smooth.
 layers:
-  - {scale: 0.5, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 1.0}
-  - {scale: 1.0, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 1.414}
-  - {scale: 2.0, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 2.0}
-  - {scale: 4.0, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 2.828}
-  - {scale: 8.0, drunks: 200, kappa_max_start: 0.05, kappa_max_end: 1.0, kappa_max_power: 1.0, weight: 4.0}
-  - {scale: 16.0, drunks: 50, kappa_max_start: 0.05, kappa_max_end: 1.0, kappa_max_power: 1.0, weight: 6.0}
+  - {scale: 0.5, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 1.0, born_on_parent: 1.0, parent_bias_power: 4.0}
+  - {scale: 1.0, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 1.414, born_on_parent: 1.0, parent_bias_power: 4.0}
+  - {scale: 2.0, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 2.0, born_on_parent: 1.0, parent_bias_power: 4.0}
+  - {scale: 4.0, drunks: 3200, kappa_max_start: 0.01, kappa_max_end: 0.4, kappa_max_power: 4.0, weight: 2.828, born_on_parent: 1.0, parent_bias_power: 4.0}
+  - {scale: 8.0, drunks: 200, kappa_max_start: 0.05, kappa_max_end: 1.0, kappa_max_power: 1.0, weight: 4.0, born_on_parent: 1.0, parent_bias_power: 4.0}
+  - {scale: 16.0, drunks: 50, kappa_max_start: 0.05, kappa_max_end: 1.0, kappa_max_power: 1.0, weight: 6.0, born_on_parent: 0.0, parent_bias_power: 0.0}
 
 parallel:
   # Threads used by the compiled (numba) walking and deposit kernels
@@ -121,6 +132,10 @@ rivers:
   valley_width: 0.03
   # Narrowest valley sigma, in cells.
   min_valley_sigma: 1.0
+  # Flat valley floor (prototype): within floor_width * sqrt(catchment cells) of the
+  # channel, terrain is lowered to the riverbed, and the Gaussian valley
+  # sides start beyond it. 0 = no floor (V-shaped valleys).
+  floor_width: 0.0
   # Steps without getting closer to the sea before switching to steepest descent.
   stall_steps: 50
 
@@ -150,11 +165,12 @@ ui:
   open_browser: true
   # Vertical-scale slider: metres per unit of normalised height, i.e. from the
   # world's lowest to its highest point. Sets the map's labels and the export
-  # (app/heights.py). 2000 m gives playable areas the median mean slope (16
-  # degrees) of the six real mountain and upland regions in data/dem; ~900 m
-  # matches gentle uplands (8 degrees), ~3500 m the Alps (28 degrees).
-  # Ranges up to cs2.max_height_m.
-  vertical_scale_m: 2000.0
+  # (app/heights.py). 3500 m puts the highest peaks at about 3,500 m, inside
+  # CS2's 4096 m, with lowlands of ~7 degrees, midlands ~9 and highlands ~12.
+  # Matching real cities' highland slopes (18.4 degrees) would need ~5300 m
+  # (util/nature_check.py --at-calibrated-scale), above CS2's range. Lower is
+  # gentler, higher more mountainous. Ranges up to cs2.max_height_m.
+  vertical_scale_m: 3500.0
   vertical_scale_min_m: 100.0
   vertical_scale_step_m: 10.0
   # Sea slider (applies at Generate; rivers depend on it): the share of the map

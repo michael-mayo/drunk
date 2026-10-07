@@ -80,6 +80,18 @@ for t in N46_00_E008_00 N39_00_W107_00 N37_00_W082_00 N57_00_W005_00 N50_00_E009
 done
 ```
 
+`util/nature_check.py` also compares with seven cities set between sea and mountains (Vancouver,
+Seattle, Salt Lake City, Innsbruck, Rio de Janeiro, Cape Town, Wellington), from tiles in
+`data/dem_cities/` (about 280 MB):
+
+```bash
+mkdir -p data/dem_cities && cd data/dem_cities
+for t in N49_00_W124_00 N47_00_W123_00 N40_00_W112_00 N47_00_E011_00 S23_00_W044_00 S34_00_E018_00 S42_00_E174_00; do
+  f=Copernicus_DSM_COG_10_${t}_DEM
+  curl -sO https://copernicus-dem-30m.s3.amazonaws.com/$f/$f.tif
+done
+```
+
 ## How to run
 
 Run everything from the project root with the `drunk` environment active.
@@ -104,8 +116,8 @@ seed 41: LayeredDrunk(layers=6, steps=1000)
   scale=4 weight=2.828: 3200 drunks, step_size=4, r0=40, variance=16, kappa_max 0.01-0.4
   scale=8 weight=4: 200 drunks, step_size=8, r0=80, variance=64, kappa_max 0.05-1
   scale=16 weight=6: 50 drunks, step_size=16, r0=160, variance=256, kappa_max 0.05-1
-  sea level 0.463
-  rivers: 799 carved (434 reach the sea, 365 are tributaries); every land cell drains to the sea
+  sea level 0.255
+  rivers: 789 carved (226 reach the sea, 563 are tributaries); every land cell drains to the sea
 Saved /home/michael/drunk/output/terrain_seed41.png
 seed 42: ...
 seed 43: ...
@@ -132,7 +144,7 @@ browser). Then:
    again as often as you like; the status line gives the playable area's centre in km of the
    generated world.
 4. Set the **Vertical scale**: the metres from the world's lowest to its highest point. The
-   default, 2000 m, gives real mountain-and-upland slopes; lower is gentler, higher more
+   default, 3500 m, puts the highest peaks at about 3,500 m with gentle lowlands; lower is gentler, higher more
    mountainous (see [Vertical scale](#vertical-scale)).
 5. Set **Sea level in the editor** to the sea level your map editor shows (Water inspector →
    Sea level). The default, 511.7 m, is the editor's own default. Heights are shifted so the coastline sits exactly at it.
@@ -163,9 +175,16 @@ the editor's sea level, the sea fills exactly the areas shown as sea.
 
 #### Vertical scale
 
-The generated heights are normalised, so their size in metres is a choice. The default is
-calibrated against the six real regions used for the terrain statistics (eight 14.3 km crops
-each, at the playable area's 35.84 m resolution):
+The generated heights are normalised, so their size in metres is a choice. The default,
+**3500 m**, puts the highest peaks at about 3,500 m, inside CS2's 4,096 m, with median slopes of
+about 7° in the lowlands, 9° in the midlands and 12° in the highlands of playable areas. Giving
+the highlands the slope of real terrain around cities (18.4°, see
+[Drunks born on bigger drunks' paths](#drunks-born-on-bigger-drunks-paths)) would need about
+5,300 m (`util/nature_check.py --at-calibrated-scale` prints the calibration), which would put
+peaks above the game's range; the lower scale also keeps lowlands and coasts gentler.
+
+For reference, the six mountain and upland regions used for the texture statistics (eight
+14.3 km crops each, at the playable area's 35.84 m resolution):
 
 | Region | Relief (lowest to highest) | Mean slope |
 |---|---|---|
@@ -177,11 +196,7 @@ each, at the playable area's 35.84 m resolution):
 | Swiss Alps | 2549 m | 28° |
 | **Median of all 48 crops** | **966 m** | **16°** |
 
-A vertical scale of about **2000 m** gives the generated playable areas the same median mean
-slope, 16° (1800 m over all windows, 2050 m over mostly-land ones), with a typical relief of about
-1200 m per playable area. The earlier default of 1000 m gave slopes about half as steep as real
-terrain, which is why imported maps looked flat. For gentler land use about 900 m (8°, like the
-German uplands); for alpine terrain about 3500 m (28°).
+Lower the scale for gentler land, raise it for more alpine terrain.
 
 #### Sea level
 
@@ -320,8 +335,8 @@ coarser and resampled, which keeps every layer cheap.
 
 | Scale | Drunks | `kappa_max` | Weight | Role |
 |---|---|---|---|---|
-| 0.5, 1, 2, 4 | 3200 each | 0.01–0.4, `p = 4` | 1, 1.41, 2, 2.83 | **Texture:** hills and valleys up to ~4 km across. Weights `(s / 0.5)^0.5`, so relief grows with distance as `distance^0.5`, as in natural terrain |
-| 8 | 200 | 0.05–1, `p = 1` | 4 | **Regions:** highlands and basins ~10 km across |
+| 0.5, 1, 2, 4 | 3200 each, born on the next larger layer's paths | 0.01–0.4, `p = 4` | 1, 1.41, 2, 2.83 | **Texture:** hills and valleys up to ~4 km across, gathered on the high ground the larger drunks build. Weights `(s / 0.5)^0.5`, so relief grows with distance as `distance^0.5`, as in natural terrain |
+| 8 | 200, born on the scale-16 drunks' paths | 0.05–1, `p = 1` | 4 | **Regions:** highlands and basins ~10 km across |
 | 16 | 50 | 0.05–1, `p = 1` | 6 | **Continents and seas,** tens of km across |
 
 ![The six weighted layers of seed 41's playable area and their sum](sample_images/layers.png)
@@ -335,17 +350,17 @@ to form distinct land masses rather than averaging into smooth noise, and biased
 together rather than smearing around the world. Measured over seeds 41–45 at 40% below sea level
 (`util/nature_check.py`):
 
-| | Four fine layers only | Six layers (default) |
-|---|---|---|
-| Seas (below-sea regions ≥ 1% of the world) | 4.6, ragged, covering 34% | 2.0, covering 37% |
-| Lakes (smaller below-sea regions, on land) | 215, covering 6.3% | 99, covering 2.5% |
-| Sea share between playable-sized windows (sd) | 11% | 25% (from all-land to all-sea) |
+| | Four fine layers only | Six layers, spread evenly | Six layers, born on parents' paths (default) |
+|---|---|---|---|
+| Seas (below-sea regions ≥ 1% of the world) | 4.6, ragged, covering 34% | 2.0, covering 37% | 1.0, covering 40% |
+| Lakes (smaller below-sea regions, on land) | 215, covering 6.3% | 99, covering 2.5% | 5, covering under 0.1% |
+| Sea share between playable-sized windows (sd) | 11% | 25% | 33% (from all-land to all-sea) |
 
-Seed by seed (41–45), one to three seas cover 36–39% of the world and lakes 1.3–4.3%; together
-they are the 40% below sea level. Land below sea level that isn't connected to a sea stays as
-lakes: it is never filled.
+Seas and lakes together are the 40% below sea level. Land below sea level that isn't connected to
+a sea stays as lakes: it is never filled. Born-on-paths drunks (below) gather on high ground, so fewer hollows
+form there and there are fewer lakes.
 
-**Still like real terrain.** Every playable-sized window (16 per world, 400 × 400 cells) is
+**Still like real terrain (all drunks spread evenly).** Every playable-sized window (16 per world, 400 × 400 cells) is
 compared with 48 crops of real terrain, 14.3 km across, from six mountain and upland regions
 (Copernicus GLO-30). Both are measured the same way: after rivers are carved, with channel
 concavity fitted per window with its edges and sea as outlets:
@@ -366,6 +381,53 @@ close to real. River settings (sources, bed concavity, valley width) barely chan
 Earlier tuning of the fine layers, with `util/terrain_experiment.py` on single 14 km maps, chose
 four layers over a single one (spectral slope 3.84 against 4.28, hypsometric integral 0.46
 against 0.08; real terrain 3.85 and 0.43).
+
+#### Drunks born on bigger drunks' paths
+
+Real terrain where cities are built is not equally rough everywhere: around cities set between
+sea and mountains, the lowest quarter of the land has a median slope of 2.9°, the middle half
+8.2° and the highest quarter 18.4°, and land heights are skewed upwards (wide low plains, a few
+tall mountains). With every drunk spread evenly, the generated lowlands are almost as rough as
+the highlands, so a vertical scale high enough for real mountains makes the lowlands hilly.
+
+So smaller drunks are **born on the paths of bigger drunks**. Layers are built largest first.
+Each drunk in a layer with `born_on_parent` > 0 is, with that probability, given as its home the
+centre of one of the next larger layer's deposits (a point a bigger drunk stepped to, chosen in
+proportion to the deposit's strength) instead of an evenly spread Poisson-disk home; it then
+walks from there as usual. Bigger drunks pile up deposits where they build high ground, so the
+smaller drunks gather there too, and the effect compounds down the scales: scale-8 drunks are
+born on scale-16 paths, scale-4 drunks on scale-8 paths, and so on. Each such layer is scaled as
+if its drunks were spread evenly (the same drunks walked from their Poisson-disk homes give the
+scale), so they keep their full relief where they gather. No image of the terrain is needed: the
+drunks only follow each other's footsteps.
+
+Born drunks pick their parent drunk with probability proportional to its `kappa_max` raised to
+`parent_bias_power`. Strongly biased parents stay near home and pile their deposits into peaks;
+weakly biased ones wander widely, across the lowlands too. Favouring the strongly biased parents
+keeps the fine texture on the mountains and leaves lowlands and coasts smooth. Measured with
+`util/nature_check.py` (seeds 41–45; slopes are medians of the lowest quarter, middle half and
+highest quarter of the land in each playable window):
+
+| | Low / mid / high slope (all windows) | Most city-like window: low / mid slope | City-likeness (0 = matches) | Vertical scale | Highest point | Lakes per world | Texture distance (mountains) |
+|---|---|---|---|---|---|---|---|
+| Real cities (7) | 2.9° / 8.2° / 18.4° | 2.9° / 8.2° | 0 | – | – | – | – |
+| All drunks spread evenly | 16.8° / – / 18.4° | 11.7° / – | 1.37 | 2050 m | ~1700 m | 99 | 0.42 |
+| Born on parents' paths, any parent alike | 15.5° / 16.3° / 18.4° | 10.7° / 14.7° | 1.33 | 3140 m | ~2600 m | 41 | 0.77 |
+| **Born on strongly biased parents (power 4, default)** | **6.7° / 9.2° / 12.5°** | **4.8° / 6.8°** | **0.85** | **3500 m** | **~3500 m** | 5 | 1.23 |
+
+(The first two rows are at the vertical scale that gives highlands the cities' 18.4°; the
+default is at 3500 m, since its calibrated scale, about 5,300 m, would exceed CS2's range.)
+Lowlands are less than half as steep as before, midlands close to real cities', and mountains
+stand about twice as high above them. The price: almost no lakes form (the smooth lowlands hold
+few hollows), and texture realism against the mountain crops drops (roughness 0.78 against a
+real 0.56, channel concavity 0.19 against 0.33). Power 8 smooths the lowlands further (4.7° in
+the most city-like windows) but leaves no lakes and drifts further from real texture (1.58).
+
+**Flat valley floors (prototype, off by default).** `rivers.floor_width` > 0 carves flat-floored
+valleys around the river network: each cell near a river is lowered to the bed of the river point
+beside it, with Gaussian valley sides beyond the floor. At 0.2 the most city-like windows match
+real cities (37% of land under 3°, lowland slope 2.7°), but neighbouring rivers' floors meet in
+straight seams and channel concavity falls further, so it stays off until the seams are smoothed.
 
 ### 4. The map wraps around
 
@@ -485,6 +547,8 @@ resolved against the folder containing the config file.
 | `layers[].kappa_max_start` / `kappa_max_end` | float | `0.01` / `0.4` (fine), `0.05` / `1.0` (big) | `kappa_max` of the layer's first and last drunk (both > 0) |
 | `layers[].kappa_max_power` | float | `4.0` (fine), `1.0` (big) | Power-log spacing exponent: `1` = logarithmic, `> 1` = more drunks near `kappa_max_start` |
 | `layers[].weight` | float | `1`, `1.414`, `2`, `2.828`, `4`, `6` | The layer is scaled to unit standard deviation, then multiplied by this (≥ 0) |
+| `layers[].born_on_parent` | float | `1` (all but the largest), `0` (scale 16) | Probability (0–1) that each drunk is born on the next larger layer's paths (home = one of its deposit centres) instead of an evenly spread home. The largest layer must be 0 |
+| `layers[].parent_bias_power` | float | `4` (born layers), `0` (scale 16) | A born drunk picks its parent drunk with probability ∝ `kappa_max ^ parent_bias_power`: higher favours peak-building parents over wanderers; 0 = any parent alike |
 | `parallel.threads` | int or `null` | `null` | Threads for the numba kernels (`null` = every core); results are identical whatever the number |
 | `walk.num_steps` | int | `1000` | Steps each drunk takes |
 | `walk.step_size` | float | `1.0` | Step length, at scale 1 |
@@ -507,6 +571,7 @@ resolved against the folder containing the config file.
 | `rivers.concavity` | float | `0.45` | Graded riverbed: bed slope ∝ catchment area^−concavity |
 | `rivers.valley_width` | float | `0.03` | Valley half-width (Gaussian sigma, cells) = `valley_width × √(catchment cells)` |
 | `rivers.min_valley_sigma` | float | `1.0` | Narrowest valley sigma, in cells |
+| `rivers.floor_width` | float | `0.0` | Prototype: flat valley floor half-width = `floor_width × √(catchment cells)`; 0 = V-shaped valleys |
 | `rivers.stall_steps` | int | `50` | Steps without progress towards the sea before switching to steepest descent |
 | `cs2.max_height_m` | float | `4096.0` | Height spanned by a CS2 16-bit heightmap at the editor's default scale; the vertical-scale maximum |
 | `cs2.editor_sea_level_m` | float | `511.7` | The map editor's sea level (0–2000 m); exported heights put the model's sea level here. The default for the UI's sea-level field |
@@ -514,7 +579,7 @@ resolved against the folder containing the config file.
 | `cs2.playable_width_km` | float | `14.336` | Side of the CS2 playable area (what a heightmap covers), outlined at the centre of the world map |
 | `ui.host` / `ui.port` | str / int | `127.0.0.1` / `9000` | Address the web UI serves on |
 | `ui.open_browser` | bool | `true` | Open the page in the browser when the UI starts |
-| `ui.vertical_scale_m` | float | `2000.0` | Default vertical scale: metres per unit of normalised height (the world's lowest to highest point), calibrated to real terrain's slopes |
+| `ui.vertical_scale_m` | float | `3500.0` | Default vertical scale: metres per unit of normalised height (the world's lowest to highest point); puts the highest peaks at about 3,500 m |
 | `ui.vertical_scale_min_m` / `ui.vertical_scale_step_m` | float | `100.0` / `10.0` | Vertical-scale slider minimum and step, in metres |
 | `ui.sea_fraction_max` | float | `0.95` | Sea slider maximum (fraction of the map) |
 | `paths.output_dir` | path | `output` | Folder where `app.main` writes maps (git-ignored) |
@@ -583,13 +648,23 @@ python util/readme_figures.py --out output/figures
 
 ### `util/nature_check.py`: check the terrain against real terrain
 
-Needs the Copernicus tiles (see [Setup](#setup)). Run it after changing the layers or rivers.
-Generates one finished world per seed from the app config, cuts each into playable-sized windows
-(16 per world), and measures every window like the real-terrain crops: spectral slope, roughness,
-hypsometric integral, skewness and channel concavity (with the window's edges and sea as outlets).
-It prints the model's and real terrain's means, the z-scores and the overall distance (RMS
-z-score, 0 = matches), plus each world's seas, lakes and variety between windows; the summary is
-also written to `output/experiments/nature_check.txt`. Takes about 45 s for five worlds.
+Needs the Copernicus tiles, both sets (see [Setup](#setup)). Run it after changing the layers or
+rivers. Generates one finished world per seed from the app config and cuts each into
+playable-sized windows (16 per world). It then reports:
+
+- **Texture against mountain terrain:** every window measured like the 48 real mountain crops:
+  spectral slope, roughness, hypsometric integral, skewness and channel concavity (with the
+  window's edges and sea as outlets); the means, z-scores and overall distance (RMS z-score,
+  0 = matches).
+- **Against cities between sea and mountains,** in metres at the app's vertical scale and editor
+  sea level: share of land under 3° and 6°, median slope of the lowest quarter, middle half and
+  highest quarter of the land, and skewness, for all windows (median) and for each world's most city-like window, with
+  its distance from the seven real city windows; and the vertical scale that makes the windows'
+  highland slopes match the cities' (the calibration for `ui.vertical_scale_m`).
+- **Structure:** each world's seas, lakes and variety between windows.
+
+The summary is also written to `output/experiments/nature_check.txt`. Takes about 50 s for five
+worlds.
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -597,6 +672,8 @@ also written to `output/experiments/nature_check.txt`. Takes about 45 s for five
 | `--seeds` | str | optional | `41,42,43,44,45` | Comma-separated seeds, one world each |
 | `--dem-dir` | path | optional | `data/dem` | Folder of Copernicus tiles |
 | `--crops-per-tile` | int | optional | `8` | Real-terrain crops per tile |
+| `--at-calibrated-scale` | flag | optional | off | Measure the city comparison at the calibrated vertical scale instead of `ui.vertical_scale_m` |
+| `--city-dem-dir` | path | optional | `data/dem_cities` | Folder of Copernicus tiles around the cities |
 
 ```bash
 python util/nature_check.py
@@ -606,15 +683,22 @@ python util/nature_check.py --seeds 1,2,3,4,5,6,7,8,9,10
 Example output (the default config):
 
 ```
-5 worlds (41, 42, 43, 44, 45), 80 windows of 400 x 400 cells, 48 real crops; 43 s
+5 worlds (41, 42, 43, 44, 45), 80 windows of 400 x 400 cells, 48 real crops; 104 s
 
                                   beta               H              HI            skew       concavity
 real terrain              3.913 ± 0.55    0.561 ± 0.15    0.426 ± 0.09    0.148 ± 0.50    0.331 ± 0.06
-generated windows         3.691 ± 0.11    0.572 ± 0.04    0.461 ± 0.05    0.122 ± 0.31    0.284 ± 0.10
-z-score of the mean              -0.41            0.08            0.42           -0.05           -0.74
+generated windows         3.773 ± 0.64    0.781 ± 0.09    0.383 ± 0.09    0.400 ± 0.50    0.190 ± 0.09
+z-score of the mean              -0.26            1.48           -0.50            0.50           -2.19
 
-distance from real terrain (RMS z-score): 0.42
-per world, at 40% below sea level: 2.0 seas covering 37%, 99 lakes covering 2.5%, sea share varying by 25% (sd) between windows
+distance from real terrain (RMS z-score): 1.23
+
+Cities between sea and mountains, at a 3500 m vertical scale and 511.7 m sea level:
+                            land<3°      land<6°   low slope°   mid slope°  high slope°         skew     distance
+real cities                    0.35         0.51         2.91         8.21        18.41         1.29
+all windows (median)           0.13         0.30         6.66         9.17        12.45         0.36
+most city-like                 0.21         0.44         4.77         6.81        11.23         0.91         0.85
+vertical scale at which highland slopes match the cities' (18.4°): 5275 m; highest point at that scale 5078 m (mean of worlds' highest 4841 m)
+per world, at 40% below sea level: 1.0 seas covering 40%, 5 lakes covering 0.0%, sea share varying by 33% (sd) between windows
 ```
 
 ### `util/terrain_experiment.py`: compare generation settings with real terrain
@@ -876,7 +960,8 @@ drunk/
 │   ├── terrain_stats.py             # Scale-free terrain and drainage statistics
 │   └── reference_terrain.py         # Square crops from Copernicus DEM tiles
 ├── sample_images/           # Images shown in this README
-├── data/dem/                # Reference elevation tiles (git-ignored; see Setup)
+├── data/dem/                # Reference elevation tiles: mountain regions (git-ignored; see Setup)
+├── data/dem_cities/         # Reference elevation tiles: cities between sea and mountains (git-ignored)
 ├── output/                  # Generated maps and experiment results (git-ignored)
 ├── config.yaml              # All settings
 ├── pytest.ini               # Test settings
