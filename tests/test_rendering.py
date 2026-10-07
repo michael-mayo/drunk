@@ -8,6 +8,7 @@ import pytest
 from matplotlib.patches import Rectangle
 
 from app import rendering
+from app.heights import HeightMapping
 
 
 def test_terrain_map_axes_are_in_km_with_the_playable_area_outlined(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -18,8 +19,8 @@ def test_terrain_map_axes_are_in_km_with_the_playable_area_outlined(monkeypatch:
     rivers = np.zeros_like(field)
     rivers[10, 5:30] = np.arange(1, 26)
     buffer = io.BytesIO()
-    rendering.save_terrain_map(buffer, field, "test", 0.3, 57.344, rivers=rivers, height_scale_m=1000.0,
-                               playable_km=14.336)
+    rendering.save_terrain_map(buffer, field, "test", 0.3, 57.344, rivers=rivers,
+                               heights=HeightMapping(2000.0, 511.7, 0.3), playable_km=14.336)
     assert buffer.getvalue()[:4] == b"\x89PNG"
     ax = figures[0].axes[0]
     assert ax.get_xlim() == pytest.approx((0.0, 57.344))

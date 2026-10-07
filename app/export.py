@@ -5,7 +5,10 @@ covers ``cs2.playable_width_km`` (14.336 km, 3.5 m per pixel); the world map
 covers ``cs2.world_width_km`` (57.344 km, 14 m per pixel) with the playable
 area as its central 1024 x 1024 pixels, as the game requires. Pixel values
 0-65535 span 0 m to ``cs2.max_height_m`` (4096 m at the editor's default
-height scale); normalised height 1.0 is exported as the chosen peak height.
+height scale). Heights become metres by ``app.heights.HeightMapping``: one
+unit of normalised height is the chosen vertical scale, and the model's sea
+level lands on the editor's sea level, so the coastline in the game matches
+the map. Deep sea floor that would fall below 0 m is flattened at 0 m.
 
 The model's grid (1600 x 1600 over the world) is resampled with cubic
 interpolation. Its finest deposits are about two cells wide, so the grid
@@ -15,7 +18,8 @@ every slope. Both files are drawn from the same re-centred world, so they
 match exactly.
 
 Each PNG carries the settings that reproduce it (seed, sea share, centre
-cell, peak height, sea level) in its file name and in a ``drunk`` text chunk.
+cell, vertical scale, editor sea level) in its file name and in a ``drunk``
+text chunk.
 """
 
 import io
@@ -29,6 +33,7 @@ from PIL import Image
 from PIL import PngImagePlugin
 
 from app.config import Config
+from app.heights import HeightMapping
 from app.pipeline import TerrainResult
 
 # Side of both CS2 heightmaps, in pixels.
@@ -87,10 +92,9 @@ def _resample_cubic(field: np.ndarray, x0: float, y0: float, size: float, n: int
     return out
 
 
-def to_uint16(heights: np.ndarray, peak_m: float, max_height_m: float) -> np.ndarray:
-    """Normalised heights (1.0 = ``peak_m`` metres) as 16-bit values spanning 0 m to ``max_height_m``."""
-    metres = np.clip(heights, 0.0, 1.0) * peak_m
-    return np.round(metres / max_height_m * MAX_VALUE).astype(np.uint16)
+def to_uint16(metres: np.ndarray, max_height_m: float) -> np.ndarray:
+    """Heights in metres as 16-bit values spanning 0 m to ``max_height_m`` (heights outside are clipped)."""
+    return np.round(np.clip(metres, 0.0, max_height_m) / max_height_m * MAX_VALUE).astype(np.uint16)
 
 
 def _png(values: np.ndarray, metadata: dict[str, object]) -> bytes:
@@ -109,16 +113,21 @@ def export_heightmaps(
     sea_percent: float,
     cx: int,
     cy: int,
-    peak_m: float,
+    vertical_scale_m: float,
+    sea_level_m: float,
 ) -> tuple[ExportFile, ExportFile]:
     """The world map and playable-area heightmaps of ``result`` with the playable area centred on cell ``(cx, cy)``.
 
+    One unit of normalised height is ``vertical_scale_m`` metres and the
+    model's sea level is put at ``sea_level_m``, the map editor's sea level.
     ``sea_percent`` is the sea share the map was generated with (only
-    recorded), and ``peak_m`` the height in metres of normalised height 1.0.
-    Returns ``(world, playable)``.
+    recorded). Returns ``(world, playable)``.
     """
-    if not 0 < peak_m <= config.cs2.max_height_m:
-        raise ValueError(f"peak height must be in (0, {config.cs2.max_height_m:g}] m, got {peak_m}")
+    if not 0 < vertical_scale_m <= config.cs2.max_height_m:
+        raise ValueError(f"vertical scale must be in (0, {config.cs2.max_height_m:g}] m, got {vertical_scale_m}")
+    if not 0 <= sea_level_m <= config.cs2.max_height_m:
+        raise ValueError(f"sea level must be in [0, {config.cs2.max_height_m:g}] m, got {sea_level_m}")
+    heights = HeightMapping(vertical_scale_m, sea_level_m, result.sea_level)
     centred = result.centred_on(cx, cy)
     n = centred.field.shape[0]
     playable_cells = n * config.cs2.playable_width_km / config.cs2.world_width_km
@@ -131,14 +140,17 @@ def export_heightmaps(
         "sea_percent": sea_percent,
         "centre_cell": [cx, cy],
         "grid_points": n,
-        "peak_height_m": peak_m,
-        "sea_level_m": round(result.sea_level * peak_m, 2),
+        "vertical_scale_m": vertical_scale_m,
+        "sea_level_m": sea_level_m,
         "max_height_m": config.cs2.max_height_m,
     }
-    stem = f"drunk_seed{result.seed}_sea{sea_percent:g}_x{cx}_y{cy}_peak{peak_m:g}m"
+    stem = f"drunk_seed{result.seed}_sea{sea_percent:g}_x{cx}_y{cy}_scale{vertical_scale_m:g}m_sl{sea_level_m:g}m"
     files = []
-    for kind, heights, width_km in (("world", world, config.cs2.world_width_km),
-                                    ("playable", playable, config.cs2.playable_width_km)):
-        values = to_uint16(heights, peak_m, config.cs2.max_height_m)
-        files.append(ExportFile(f"{stem}_{kind}.png", _png(values, {**metadata, "map": kind, "width_km": width_km})))
+    for kind, field, width_km in (("world", world, config.cs2.world_width_km),
+                                  ("playable", playable, config.cs2.playable_width_km)):
+        metres = heights.metres(field)
+        extra = {"map": kind, "width_km": width_km,
+                 # Share of the map below 0 m (deep sea floor), flattened at 0 m.
+                 "clipped_below_0m": round(float(np.mean(metres < 0.0)), 4)}
+        files.append(ExportFile(f"{stem}_{kind}.png", _png(to_uint16(metres, config.cs2.max_height_m), {**metadata, **extra})))
     return files[0], files[1]

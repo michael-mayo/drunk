@@ -1,8 +1,8 @@
 """Web UI: enter a seed, generate a layered-drunk terrain map, and view it in the browser.
 
 Serves a single page at ``http://<ui.host>:<ui.port>/`` (``localhost:9000`` by
-default) with a seed field, a Generate button, a progress bar, a peak-height
-slider and the map, drawn as ``main`` draws it. Generation runs in a
+default) with a seed field, Generate and Export buttons, a progress bar,
+vertical-scale and sea sliders, an editor sea-level field and the map, drawn as ``main`` draws it. Generation runs in a
 background thread through ``app.pipeline.generate_terrain``; the page polls
 for progress and shows the PNG when it is ready. One map is generated at a
 time.
@@ -18,11 +18,13 @@ centre. Clicking the map moves the playable area to the clicked point: the
 world wraps around, so it is rolled to bring that point to the centre. A
 dashed square previews the new position under the mouse.
 
-Heights stay normalised (0-1) throughout; the slider only sets how they are
-labelled in Cities: Skylines II metres: 0.0 is 0 m and 1.0 is the slider's
-peak height (default ``ui.peak_height_m``, at most ``cs2.max_height_m``), so
-sea level scales with it. Moving the slider redraws the map's numbers (colour
-bar, sea level, title); the picture itself doesn't change.
+Heights stay normalised (0-1) until they are labelled or exported in
+Cities: Skylines II metres (``app.heights.HeightMapping``): one unit is the
+vertical-scale slider's value (default ``ui.vertical_scale_m``, at most
+``cs2.max_height_m``), and the model's sea level is put at the editor sea
+level typed in (default ``cs2.editor_sea_level_m``), so the coastline in the
+game matches the map. Changing either redraws the map's numbers (colour bar,
+sea level, title); the picture itself doesn't change.
 
 Uses only the Python standard library's HTTP server, so it needs no extra
 dependencies. Endpoints:
@@ -32,14 +34,16 @@ dependencies. Endpoints:
   (``sea_percent`` optional, 0 to ``ui.sea_fraction_max`` x 100): start a job;
   returns ``{"job": <id>}`` (409 if a job is already running).
 - ``GET /api/progress/<id>``: ``{"fraction", "message", "done", "error",
-  "info"}``; ``info`` (when done) gives the normalised sea level and highest
-  point, the sea fraction and river counts.
-- ``GET /api/export/<id>?kind=<world|playable>&peak=<m>&cx=<col>&cy=<row>``:
+  "info"}``; ``info`` (when done) gives the normalised sea level, lowest and
+  highest points, the sea fraction, river counts and grid size.
+- ``GET /api/export/<id>?kind=<world|playable>&scale=<m>&sl=<m>&cx=<col>&cy=<row>``:
   a Cities: Skylines II heightmap (4096 x 4096, 16-bit PNG, ``app.export``)
   for that view, sent as a download named after its settings.
-- ``GET /api/image/<id>?peak=<m>&cx=<col>&cy=<row>``: the finished map as
-  PNG, labelled with 1.0 = ``<m>`` metres (default ``ui.peak_height_m``),
-  rolled so grid cell ``(cx, cy)`` is at the centre (default: the middle cell).
+- ``GET /api/image/<id>?scale=<m>&sl=<m>&cx=<col>&cy=<row>``: the finished
+  map as PNG, labelled in metres with vertical scale ``scale`` (default
+  ``ui.vertical_scale_m``) and editor sea level ``sl`` (default
+  ``cs2.editor_sea_level_m``), rolled so grid cell ``(cx, cy)`` is at the
+  centre (default: the middle cell).
 """
 
 import argparse
@@ -73,6 +77,7 @@ from app.config import Config
 from app.config import load_config
 from app.export import ExportFile
 from app.export import export_heightmaps
+from app.heights import HeightMapping
 from app.pipeline import TerrainResult
 from app.pipeline import generate_terrain
 from app.rendering import MAP_RECT
@@ -120,7 +125,8 @@ PAGE = """<!doctype html>
   #preview[hidden] { display: none; }
   .scale { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
   .scale input[type=range] { flex: 1; min-width: 180px; width: auto; padding: 0; accent-color: var(--accent); }
-  #peakValue { min-width: 72px; font-variant-numeric: tabular-nums; }
+  #scaleValue { min-width: 72px; font-variant-numeric: tabular-nums; }
+  #sealevel { width: 100px; }
   .hint { color: var(--muted); font-size: 13px; }
 </style>
 </head>
@@ -134,11 +140,18 @@ PAGE = """<!doctype html>
     <button id="export" type="button" disabled>Export heightmaps</button>
   </form>
   <div class="scale">
-    <label for="peak">Peak height</label>
-    <input id="peak" type="range" min="__PEAK_MIN__" max="__PEAK_MAX__" step="__PEAK_STEP__" value="__PEAK_DEFAULT__">
-    <span id="peakValue"></span>
+    <label for="scale">Vertical scale</label>
+    <input id="scale" type="range" min="__SCALE_MIN__" max="__SCALE_MAX__" step="__SCALE_STEP__" value="__SCALE_DEFAULT__">
+    <span id="scaleValue"></span>
   </div>
-  <div class="hint">Height 1.0 is shown as this many metres (0.0 is 0 m); Cities: Skylines II's full range is __PEAK_MAX__ m.</div>
+  <div class="hint">Metres from the world's lowest to its highest point. __SCALE_DEFAULT__ m matches the slopes of real
+    mountain and upland terrain; about 900 m is gentle uplands, 3,500 m the Alps.</div>
+  <div class="scale">
+    <label for="sealevel">Sea level in the editor</label>
+    <input id="sealevel" type="number" min="0" max="2000" step="0.1" value="__SEA_LEVEL_DEFAULT__"> m
+  </div>
+  <div class="hint">Set this to the map editor's sea level: exported heights are shifted so the coastline sits
+    exactly at it. Deep sea floor that would fall below 0 m is flattened at 0 m.</div>
   <div class="scale">
     <label for="sea">Sea</label>
     <input id="sea" type="range" min="0" max="__SEA_MAX__" step="1" value="__SEA_DEFAULT__">
@@ -150,8 +163,8 @@ PAGE = """<!doctype html>
   <div class="hint" id="pickHint" hidden>The white square is the playable area (__PLAYABLE_KM__ km) at the centre
     of the __WORLD_KM__ km world map. Click anywhere to move it there: the world wraps around, so the map
     re-centres on your point. <b>Export heightmaps</b> downloads the Cities: Skylines II world map and
-    playable-area heightmap (4096 x 4096, 16-bit) for this view, with height 1.0 at the peak height above;
-    both file names record the seed, sea share, centre and peak height.</div>
+    playable-area heightmap (4096 x 4096, 16-bit) for this view, at the vertical scale and editor sea level
+    above; both file names record the seed, sea share, centre, vertical scale and sea level.</div>
   <div class="mapwrap" id="mapwrap" hidden>
     <img id="map" alt="Generated terrain map">
     <div id="preview" hidden></div>
@@ -162,7 +175,8 @@ const form = document.getElementById("form"), seedInput = document.getElementByI
 const go = document.getElementById("go"), bar = document.getElementById("bar");
 const exportButton = document.getElementById("export");
 const statusLine = document.getElementById("status"), map = document.getElementById("map");
-const peak = document.getElementById("peak"), peakValue = document.getElementById("peakValue");
+const scale = document.getElementById("scale"), scaleValue = document.getElementById("scaleValue");
+const seaLevel = document.getElementById("sealevel");
 const sea = document.getElementById("sea"), seaValue = document.getElementById("seaValue");
 const seaHint = document.getElementById("seaHint");
 const mapWrap = document.getElementById("mapwrap"), preview = document.getElementById("preview");
@@ -177,7 +191,11 @@ let currentJob = null, currentInfo = null, redrawTimer = null;
 let centre = null;
 
 const metres = (v) => Math.round(v).toLocaleString() + " m";
-function showPeak() { peakValue.textContent = metres(Number(peak.value)); }
+function showScale() { scaleValue.textContent = metres(Number(scale.value)); }
+// The editor sea level typed in, kept within the editor's 0-2000 m.
+function editorSeaLevel() { return Math.min(Math.max(Number(seaLevel.value) || 0, 0), 2000); }
+// The query giving the view's vertical scale, editor sea level and centre.
+function viewQuery() { return `scale=${scale.value}&sl=${editorSeaLevel()}&cx=${centre[0]}&cy=${centre[1]}`; }
 function showSea() {
   seaValue.textContent = sea.value + "%";
   seaHint.textContent = (generatedSea !== null && Number(sea.value) !== generatedSea)
@@ -187,9 +205,13 @@ showSea();
 sea.addEventListener("input", showSea);
 function summary() {
   if (!currentInfo) return;
-  const p = Number(peak.value), i = currentInfo;
-  let text = `Seed ${i.seed}: sea level ${metres(i.sea_level * p)}, highest point ${metres(i.max_height * p)}, `
-           + `${Math.round(i.sea_fraction * 100)}% sea`;
+  const i = currentInfo, sl = editorSeaLevel();
+  // Metres as exported: the model's sea level lands on the editor's.
+  const inMetres = (h) => sl + (h - i.sea_level) * Number(scale.value);
+  let text = `Seed ${i.seed}: sea level ${sl.toLocaleString()} m, highest point ${metres(inMetres(i.max_height))}, `
+           + `lowest ${metres(inMetres(i.min_height))}`
+           + (inMetres(i.min_height) < 0 ? " (flattened at 0 m in the export)" : "")
+           + `, ${Math.round(i.sea_fraction * 100)}% sea`;
   if (i.state === "no sea") text += ", no rivers (with no sea there is nowhere to drain to)";
   else if (i.rivers !== null) text += `, ${i.rivers} rivers (${i.rivers_to_sea} reach the sea)`;
   const km = (c) => ((c + 0.5) * WORLD_KM / i.grid_points).toFixed(1);
@@ -197,7 +219,7 @@ function summary() {
   statusLine.textContent = text;
 }
 function showMap() {
-  map.src = `/api/image/${currentJob}?peak=${peak.value}&cx=${centre[0]}&cy=${centre[1]}`;
+  map.src = `/api/image/${currentJob}?${viewQuery()}`;
   mapWrap.hidden = false; pickHint.hidden = false;
 }
 
@@ -229,14 +251,16 @@ map.addEventListener("click", (event) => {
   preview.hidden = true;
   showMap(); summary();
 });
-showPeak();
-peak.addEventListener("input", () => {
-  showPeak(); summary();
+showScale();
+// Redraw the labels once the vertical scale or sea level settles.
+function relabel() {
+  showScale(); summary();
   if (currentJob === null || !currentInfo) return;
-  // Redraw the labels once the slider settles.
   clearTimeout(redrawTimer);
   redrawTimer = setTimeout(showMap, 250);
-});
+}
+scale.addEventListener("input", relabel);
+seaLevel.addEventListener("input", relabel);
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -265,7 +289,7 @@ function finish() { go.disabled = false; sea.disabled = false; }
 exportButton.addEventListener("click", async () => {
   if (!currentInfo) return;
   exportButton.disabled = true;
-  const query = `peak=${peak.value}&cx=${centre[0]}&cy=${centre[1]}`;
+  const query = viewQuery();
   try {
     for (const kind of ["world", "playable"]) {
       statusLine.textContent = `Preparing the ${kind} heightmap…`;
@@ -325,11 +349,11 @@ class Job:
     done: bool = False
     error: str | None = None
     result: TerrainResult | None = None
-    # Rendered PNGs keyed by (peak height in m, centre column, centre row), most recently used last.
+    # Rendered PNGs keyed by (vertical scale m, editor sea level m, centre column, centre row), most recently used last.
     images: OrderedDict = dataclass_field(default_factory=OrderedDict)
     lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
-    # The last exported heightmaps and the (peak, cx, cy) they were made for, and the lock that guards them.
-    exported: tuple[tuple[float, int, int], tuple[ExportFile, ExportFile]] | None = None
+    # The last exported heightmaps and the (scale, sea level, cx, cy) they were made for, and the lock that guards them.
+    exported: tuple[tuple[float, float, int, int], tuple[ExportFile, ExportFile]] | None = None
     export_lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
 
     def update(self, fraction: float, message: str) -> None:
@@ -348,6 +372,7 @@ class Job:
                     "seed": self.seed,
                     "sea_level": r.sea_level,
                     "max_height": float(r.field.max()),
+                    "min_height": float(r.field.min()),
                     "sea_fraction": r.sea_fraction,
                     "rivers": r.rivers_carved if r.state == "rivers" else None,
                     "state": r.state,
@@ -357,13 +382,14 @@ class Job:
             return {"fraction": self.fraction, "message": self.message, "done": self.done, "error": self.error,
                     "info": info}
 
-    def image(self, peak_m: float, cx: int, cy: int) -> bytes:
-        """The finished map as PNG, centred on cell ``(cx, cy)`` and labelled with height 1.0 = ``peak_m`` metres (cached).
+    def image(self, scale_m: float, sea_level_m: float, cx: int, cy: int) -> bytes:
+        """The finished map as PNG, centred on cell ``(cx, cy)``, labelled in metres as exported (cached).
 
-        The world map wraps around, so it is rolled to bring the cell to the
-        centre, where the playable area is outlined.
+        Heights are labelled as ``HeightMapping(scale_m, sea_level_m, ...)``
+        maps them. The world map wraps around, so it is rolled to bring the
+        cell to the centre, where the playable area is outlined.
         """
-        key = (round(peak_m, 3), cx, cy)
+        key = (round(scale_m, 3), round(sea_level_m, 3), cx, cy)
         with self.lock:
             if key in self.images:
                 self.images.move_to_end(key)
@@ -371,13 +397,14 @@ class Job:
             r = self.result
         if r is None:
             raise ValueError("the map isn't finished")
-        title = (f"seed {self.seed}: sea level {r.sea_level * peak_m:,.0f} m, "
-                 f"highest point {float(r.field.max()) * peak_m:,.0f} m, {r.sea_fraction:.0%} sea")
+        heights = HeightMapping(scale_m, sea_level_m, r.sea_level)
+        title = (f"seed {self.seed}: sea level {sea_level_m:,.1f} m, "
+                 f"highest point {heights.metres(float(r.field.max())):,.0f} m, {r.sea_fraction:.0%} sea")
         r = r.centred_on(cx, cy)
         buffer = io.BytesIO()
         with RENDER_LOCK:
             save_terrain_map(buffer, r.field, title, r.sea_level, self.world_km, rivers=r.river_area,
-                             height_scale_m=peak_m, playable_km=self.playable_km, dpi=UI_DPI)
+                             heights=heights, playable_km=self.playable_km, dpi=UI_DPI)
         png = buffer.getvalue()
         with self.lock:
             self.images[key] = png
@@ -385,21 +412,22 @@ class Job:
                 self.images.popitem(last=False)
         return png
 
-    def export(self, config: Config, peak_m: float, cx: int, cy: int) -> tuple[ExportFile, ExportFile]:
-        """The world and playable-area heightmaps centred on cell ``(cx, cy)`` with height 1.0 = ``peak_m`` m (cached).
+    def export(self, config: Config, scale_m: float, sea_level_m: float, cx: int, cy: int) -> tuple[ExportFile, ExportFile]:
+        """The world and playable-area heightmaps centred on cell ``(cx, cy)``, at that vertical scale and editor sea level (cached).
 
         Both are made together and kept for the most recent settings, so the
         page's second download is instant; the export lock stops two requests
         making them twice.
         """
-        key = (round(peak_m, 3), cx, cy)
+        key = (round(scale_m, 3), round(sea_level_m, 3), cx, cy)
         with self.export_lock:
             if self.exported is None or self.exported[0] != key:
                 with self.lock:
                     r = self.result
                 if r is None:
                     raise ValueError("the map isn't finished")
-                self.exported = (key, export_heightmaps(r, config, round(self.water_fraction * 100, 3), cx, cy, peak_m))
+                self.exported = (key, export_heightmaps(r, config, round(self.water_fraction * 100, 3), cx, cy,
+                                                        scale_m, sea_level_m))
             return self.exported[1]
 
 
@@ -413,10 +441,11 @@ class JobManager:
         """Manage jobs generated with ``config``."""
         self.config = config
         self.page = (
-            PAGE.replace("__PEAK_MIN__", f"{config.ui.peak_height_min_m:g}")
-            .replace("__PEAK_MAX__", f"{config.cs2.max_height_m:g}")
-            .replace("__PEAK_STEP__", f"{config.ui.peak_height_step_m:g}")
-            .replace("__PEAK_DEFAULT__", f"{config.ui.peak_height_m:g}")
+            PAGE.replace("__SCALE_MIN__", f"{config.ui.vertical_scale_min_m:g}")
+            .replace("__SCALE_MAX__", f"{config.cs2.max_height_m:g}")
+            .replace("__SCALE_STEP__", f"{config.ui.vertical_scale_step_m:g}")
+            .replace("__SCALE_DEFAULT__", f"{config.ui.vertical_scale_m:g}")
+            .replace("__SEA_LEVEL_DEFAULT__", f"{config.cs2.editor_sea_level_m:g}")
             .replace("__SEA_MAX__", f"{round(config.ui.sea_fraction_max * 100):d}")
             .replace("__SEA_DEFAULT__", f"{round(config.sea.water_fraction * 100):d}")
             .replace("__MAP_RECT__", json.dumps(list(MAP_RECT)))
@@ -454,9 +483,9 @@ class JobManager:
             job.update(0.97, "drawing the map")
             with job.lock:
                 job.result = result
-            # Draw at the default peak height and centre now, so the first view is instant.
+            # Draw at the default vertical scale, sea level and centre now, so the first view is instant.
             middle = result.field.shape[0] // 2
-            job.image(self.config.ui.peak_height_m, middle, middle)
+            job.image(self.config.ui.vertical_scale_m, self.config.cs2.editor_sea_level_m, middle, middle)
             with job.lock:
                 job.fraction, job.message, job.done = 1.0, "done", True
         except Exception as exc:  # report any failure to the page rather than killing the thread silently
@@ -496,20 +525,26 @@ def make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "no such job"})
             return job
 
-        def _view(self, job: Job) -> tuple[float, int, int] | None:
-            """The ``(peak_m, cx, cy)`` asked for by the query (peak height, centre cell), or None (and an error sent).
+        def _view(self, job: Job) -> tuple[float, float, int, int] | None:
+            """The ``(scale_m, sea_level_m, cx, cy)`` asked for by the query, or None (and an error sent).
 
-            The peak height defaults to ``ui.peak_height_m`` and is kept within
-            the slider's range; the centre defaults to the middle cell.
+            ``scale`` is the vertical scale (default ``ui.vertical_scale_m``,
+            kept within the slider's range), ``sl`` the editor sea level
+            (default ``cs2.editor_sea_level_m``, 0-2000 m) and ``cx``, ``cy``
+            the centre cell (default the middle cell).
             """
-            ui = manager.config.ui
+            config = manager.config
             query = parse_qs(urlparse(self.path).query)
             try:
-                peak_m = float(query.get("peak", [ui.peak_height_m])[0])
+                scale_m = float(query.get("scale", [config.ui.vertical_scale_m])[0])
+                sea_level_m = float(query.get("sl", [config.cs2.editor_sea_level_m])[0])
             except ValueError:
-                self._json(HTTPStatus.BAD_REQUEST, {"error": "peak must be a number of metres"})
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "scale and sl must be numbers of metres"})
                 return None
-            peak_m = min(max(peak_m, ui.peak_height_min_m), manager.config.cs2.max_height_m)
+            scale_m = min(max(scale_m, config.ui.vertical_scale_min_m), config.cs2.max_height_m)
+            if not 0 <= sea_level_m <= 2000:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "sl (the editor sea level) must be 0-2000 m"})
+                return None
             if job.result is None:
                 self._json(HTTPStatus.CONFLICT, {"error": "not finished"})
                 return None
@@ -522,7 +557,7 @@ def make_handler(manager: JobManager) -> type[BaseHTTPRequestHandler]:
             if not (0 <= cx < n and 0 <= cy < n):
                 self._json(HTTPStatus.BAD_REQUEST, {"error": f"cx and cy must be whole numbers from 0 to {n - 1}"})
                 return None
-            return peak_m, cx, cy
+            return scale_m, sea_level_m, cx, cy
 
         def do_GET(self) -> None:
             """Serve the page, job progress, a finished image, or an exported heightmap."""

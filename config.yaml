@@ -135,6 +135,12 @@ cs2:
   # is 14,336 m across, the central quarter of the world map. In the web UI
   # you pick where on the world it lies.
   playable_width_km: 14.336
+  # The map editor's sea level (m), the default for the web UI's sea-level
+  # field. Exported heights are shifted so the model's sea level lands here,
+  # so the coastline in the game matches the map. The editor allows 0-2000 m.
+  # 511.7 m is the editor's default: it resets to it every time the editor is
+  # opened (observed in the game; not documented online).
+  editor_sea_level_m: 511.7
 
 ui:
   # Web UI (app/ui.py): served at http://<host>:<port>/.
@@ -142,11 +148,15 @@ ui:
   port: 9000
   # Open the page in the default web browser when the server starts.
   open_browser: true
-  # Peak-height slider: normalised height 1.0 is shown as this many metres
-  # (0.0 is 0 m; sea level scales with it). Ranges up to cs2.max_height_m.
-  peak_height_m: 1000.0
-  peak_height_min_m: 100.0
-  peak_height_step_m: 10.0
+  # Vertical-scale slider: metres per unit of normalised height, i.e. from the
+  # world's lowest to its highest point. Sets the map's labels and the export
+  # (app/heights.py). 2000 m gives playable areas the median mean slope (16
+  # degrees) of the six real mountain and upland regions in data/dem; ~900 m
+  # matches gentle uplands (8 degrees), ~3500 m the Alps (28 degrees).
+  # Ranges up to cs2.max_height_m.
+  vertical_scale_m: 2000.0
+  vertical_scale_min_m: 100.0
+  vertical_scale_step_m: 10.0
   # Sea slider (applies at Generate; rivers depend on it): the share of the map
   # that is sea, defaulting to sea.water_fraction, up to this maximum.
   sea_fraction_max: 0.95

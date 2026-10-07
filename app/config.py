@@ -101,18 +101,20 @@ class Cs2Config:
     world_width_km: float
     # Side (km) of the playable area that a heightmap covers, at the centre of the world map.
     playable_width_km: float
+    # The map editor's sea level (m): exported heights put the model's sea level here.
+    editor_sea_level_m: float
 
 
 @dataclass(frozen=True)
 class UiConfig:
-    """Web UI server settings, and the peak-height slider."""
+    """Web UI server settings, and the vertical-scale and sea sliders."""
 
     host: str
     port: int
     open_browser: bool
-    peak_height_m: float
-    peak_height_min_m: float
-    peak_height_step_m: float
+    vertical_scale_m: float
+    vertical_scale_min_m: float
+    vertical_scale_step_m: float
     sea_fraction_max: float
 
 
@@ -232,6 +234,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         max_height_m=float(_require(cs2_raw, "max_height_m", "cs2")),
         world_width_km=float(_require(cs2_raw, "world_width_km", "cs2")),
         playable_width_km=float(_require(cs2_raw, "playable_width_km", "cs2")),
+        editor_sea_level_m=float(_require(cs2_raw, "editor_sea_level_m", "cs2")),
     )
     if not 0 < cs2.playable_width_km <= cs2.world_width_km:
         raise ValueError("config needs 0 < cs2.playable_width_km <= cs2.world_width_km")
@@ -240,15 +243,17 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         host=str(_require(ui_raw, "host", "ui")),
         port=int(_require(ui_raw, "port", "ui")),
         open_browser=bool(_require(ui_raw, "open_browser", "ui")),
-        peak_height_m=float(_require(ui_raw, "peak_height_m", "ui")),
-        peak_height_min_m=float(_require(ui_raw, "peak_height_min_m", "ui")),
-        peak_height_step_m=float(_require(ui_raw, "peak_height_step_m", "ui")),
+        vertical_scale_m=float(_require(ui_raw, "vertical_scale_m", "ui")),
+        vertical_scale_min_m=float(_require(ui_raw, "vertical_scale_min_m", "ui")),
+        vertical_scale_step_m=float(_require(ui_raw, "vertical_scale_step_m", "ui")),
         sea_fraction_max=float(_require(ui_raw, "sea_fraction_max", "ui")),
     )
     if not 0 <= sea.water_fraction <= ui.sea_fraction_max < 1:
         raise ValueError("config needs 0 <= sea.water_fraction <= ui.sea_fraction_max < 1")
-    if not 0 < ui.peak_height_min_m <= ui.peak_height_m <= cs2.max_height_m:
-        raise ValueError("config needs 0 < ui.peak_height_min_m <= ui.peak_height_m <= cs2.max_height_m")
+    if not 0 < ui.vertical_scale_min_m <= ui.vertical_scale_m <= cs2.max_height_m:
+        raise ValueError("config needs 0 < ui.vertical_scale_min_m <= ui.vertical_scale_m <= cs2.max_height_m")
+    if not 0 <= cs2.editor_sea_level_m <= cs2.max_height_m:
+        raise ValueError("config needs 0 <= cs2.editor_sea_level_m <= cs2.max_height_m")
     paths_raw = _require(raw, "paths", "")
     paths = PathsConfig(
         output_dir=_resolve(base_dir, _require(paths_raw, "output_dir", "paths")),

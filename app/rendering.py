@@ -13,6 +13,8 @@ from matplotlib.colors import ListedColormap
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import MaxNLocator
 
+from app.heights import HeightMapping
+
 # Size of the terrain-map figure, in inches.
 FIGURE_SIZE = (7.0, 6.0)
 # Where the map itself sits in the figure: (left, bottom, width, height) as
@@ -59,7 +61,7 @@ def save_terrain_map(
     sea_level: float,
     width_km: float,
     rivers: np.ndarray | None = None,
-    height_scale_m: float | None = None,
+    heights: HeightMapping | None = None,
     playable_km: float | None = None,
     dpi: int = 100,
 ) -> None:
@@ -73,10 +75,10 @@ def save_terrain_map(
     be an open binary file (e.g. ``io.BytesIO``), which receives the PNG.
     Parent folders of a path are created if needed.
 
-    With ``height_scale_m``, heights are labelled in metres (normalised
-    height x ``height_scale_m``): the colour bar gets round-metre ticks and
+    With ``heights``, heights are labelled in metres as the game will have
+    them (``HeightMapping.metres``): the colour bar gets round-metre ticks and
     the sea-level marker shows its height in metres. Only the labels change;
-    the picture is identical for any scale.
+    the picture is identical for any mapping.
 
     The map is drawn as a square ``width_km`` kilometres across, with both
     axes labelled from 0 km at the lower-left corner, at ``MAP_RECT`` in a
@@ -117,19 +119,20 @@ def save_terrain_map(
         for colour, width in (("black", 2.4), ("white", 1.2)):
             ax.add_patch(Rectangle((corner, corner), playable_km, playable_km, fill=False, edgecolor=colour,
                                    linewidth=width))
-    if height_scale_m is None:
+    if heights is None:
         bar = fig.colorbar(image, cax=cax, label="normalised height")
         sea_label = "sea level"
     else:
         bar = fig.colorbar(image, cax=cax, label="height (m)")
         # Ticks at round metre values, placed in the field's normalised units.
-        ticks_m = MaxNLocator(nbins=7).tick_values(vmin * height_scale_m, vmax * height_scale_m)
-        ticks_m = ticks_m[(ticks_m >= vmin * height_scale_m - 1e-9) & (ticks_m <= vmax * height_scale_m + 1e-9)]
+        low_m, high_m = heights.metres(vmin), heights.metres(vmax)
+        ticks_m = MaxNLocator(nbins=7).tick_values(low_m, high_m)
+        ticks_m = ticks_m[(ticks_m >= low_m - 1e-9) & (ticks_m <= high_m + 1e-9)]
         # Leave room for the sea-level label: drop ticks within 4% of the range of it.
-        ticks_m = ticks_m[np.abs(ticks_m / height_scale_m - sea_level) > 0.04 * (vmax - vmin)]
-        bar.set_ticks(ticks_m / height_scale_m)
+        ticks_m = ticks_m[np.abs(heights.normalised(ticks_m) - sea_level) > 0.04 * (vmax - vmin)]
+        bar.set_ticks(heights.normalised(ticks_m))
         bar.set_ticklabels([f"{t:,.0f}" for t in ticks_m])
-        sea_label = f"sea level\n{sea_level * height_scale_m:,.0f} m"
+        sea_label = f"sea level\n{heights.metres(sea_level):,.1f} m"
     # Put the bar's title on its left, leaving the right side for ticks and the
     # sea-level marker, which would otherwise collide when sea level is mid-range.
     bar.ax.yaxis.set_label_position("left")

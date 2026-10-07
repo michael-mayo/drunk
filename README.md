@@ -28,9 +28,10 @@ Each map is a Cities: Skylines II **world map, 57.344 km** on a side, with the *
 14.336 km** on a side, outlined in white at its centre. In CS2 a heightmap is 4096 × 4096 pixels
 covering the playable area (3.5 m per pixel), and the optional world map is another 4096 × 4096
 image four times wider (14 m per pixel) whose central 1024 × 1024 pixels are the playable area. In
-the web UI you choose where the playable area goes by clicking on the world map, set the peak
-height, and press **Export heightmaps** to download both files, ready for the CS2 map editor.
-Heights are normalised (0–1) until export, where height 1.0 becomes the chosen peak height.
+the web UI you choose where the playable area goes by clicking on the world map, set the vertical
+scale and the editor's sea level, and press **Export heightmaps** to download both files, ready
+for the CS2 map editor. Heights are normalised (0–1) until they are labelled or exported in
+metres, with the coastline placed exactly at the editor's sea level.
 
 ## Quick start
 
@@ -130,13 +131,17 @@ browser). Then:
    on your point: the playable area always stays in the middle and the world moves around it. Click
    again as often as you like; the status line gives the playable area's centre in km of the
    generated world.
-4. Move the **Peak height** slider to choose how many metres the highest point represents. This
-   relabels the colour bar and summary in metres (the picture doesn't change) and sets the heights
-   in the export.
-5. Press **Export heightmaps.** After a few seconds the browser downloads two files for the
+4. Set the **Vertical scale**: the metres from the world's lowest to its highest point. The
+   default, 2000 m, gives real mountain-and-upland slopes; lower is gentler, higher more
+   mountainous (see [Vertical scale](#vertical-scale)).
+5. Set **Sea level in the editor** to the sea level your map editor shows (Water inspector →
+   Sea level). The default, 511.7 m, is the editor's own default. Heights are shifted so the coastline sits exactly at it.
+   Both settings relabel the colour bar and summary in game metres (the picture doesn't change)
+   and set the heights in the export.
+6. Press **Export heightmaps.** After a few seconds the browser downloads two files for the
    current view (see [Exporting to Cities: Skylines II](#exporting-to-cities-skylines-ii)):
-   `drunk_seed<seed>_sea<%>_x<col>_y<row>_peak<m>m_world.png` and `…_playable.png`. Your browser
-   may ask once whether to allow the site to download multiple files.
+   `drunk_seed<seed>_sea<%>_x<col>_y<row>_scale<m>m_sl<m>m_world.png` and `…_playable.png`. Your
+   browser may ask once whether to allow the site to download multiple files.
 
 Moving the Sea slider after a map is drawn has no effect until you press Generate again, because
 sea level decides where the rivers run. Stop the server with Ctrl+C.
@@ -152,8 +157,43 @@ or RAW), with values 0–65535 spanning 0–4096 m at the editor's default heigh
 | World map (optional) | 57.344 km, the playable area as its central 1024 × 1024 pixels | 14 m | `…_world.png` |
 
 Copy both into `%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\Heightmaps\`
-and import them in the editor. Then set the editor's sea level to the exported **sea level in
-metres**, given in the file's metadata (`sea_level_m`; the UI's status line shows it too).
+and import them in the editor at its default height scale (4096 m). The coastline is at the sea
+level entered in the UI (recorded as `sea_level_m` in each file's metadata), so if that matches
+the editor's sea level, the sea fills exactly the areas shown as sea.
+
+#### Vertical scale
+
+The generated heights are normalised, so their size in metres is a choice. The default is
+calibrated against the six real regions used for the terrain statistics (eight 14.3 km crops
+each, at the playable area's 35.84 m resolution):
+
+| Region | Relief (lowest to highest) | Mean slope |
+|---|---|---|
+| German uplands | 389 m | 8° |
+| Scottish Highlands | 815 m | 11° |
+| Colorado Rockies | 1430 m | 16° |
+| Appalachians | 526 m | 19° |
+| Pyrenees | 1655 m | 20° |
+| Swiss Alps | 2549 m | 28° |
+| **Median of all 48 crops** | **966 m** | **16°** |
+
+A vertical scale of about **2000 m** gives the generated playable areas the same median mean
+slope, 16° (1800 m over all windows, 2050 m over mostly-land ones), with a typical relief of about
+1200 m per playable area. The earlier default of 1000 m gave slopes about half as steep as real
+terrain, which is why imported maps looked flat. For gentler land use about 900 m (8°, like the
+German uplands); for alpine terrain about 3500 m (28°).
+
+#### Sea level
+
+Cities: Skylines II sets the sea in the editor (0–2000 m), not in the heightmap. So the export
+places the model's sea level at the editor's: `metres = editor sea level + (height − model sea
+level) × vertical scale` (`app/heights.py`). The UI's colour bar, title and summary use the same
+mapping, so the numbers shown are the game's. The default, 511.7 m, is the editor's own default
+sea level: it resets to it every time the editor is opened, even after being changed (observed in
+the game; it isn't documented online). If you use a different sea level in the editor, type it
+into the UI's field (or set `cs2.editor_sea_level_m`). Sea floor that would fall below 0 m is flattened at 0 m; at the
+defaults that is only the deepest ~0.3% of the world, and the share is recorded in each file's
+metadata (`clipped_below_0m`).
 
 What the export does (`app/export.py`):
 
@@ -164,13 +204,13 @@ What the export does (`app/export.py`):
   400 × 400 cells become 4096 × 4096). The finest deposits are about two cells wide, so the grid
   already holds all the terrain's detail; cubic resampling fills in smooth values instead of the
   kinks bilinear resampling would put in every slope.
-- **Scales** normalised height 1.0 to the peak height and stores metres as `metres / 4096 × 65535`
-  (one step ≈ 6 cm), with north at the top.
+- **Converts** heights to metres with the vertical scale and editor sea level (above), and stores
+  them as `metres / 4096 × 65535` (one step ≈ 6 cm), with north at the top.
 - **Tags** both files with everything needed to reproduce them, in the file name and in a
-  `drunk` PNG text chunk: seed, sea share, centre cell, grid size, peak height, sea level in metres
+  `drunk` PNG text chunk: seed, sea share, centre cell, grid size, vertical scale, editor sea level
   and which map it is. Regenerate with the same seed and sea share, click the same centre (or
   request it directly, see the endpoints under [`app.ui`](#appui-web-ui)) and export at the same
-  peak height to get identical files.
+  vertical scale and sea level to get identical files.
 
 Exporting takes about 3.5 s (mostly PNG compression); the files are about 17 MB (world) and 8 MB
 (playable).
@@ -468,13 +508,14 @@ resolved against the folder containing the config file.
 | `rivers.valley_width` | float | `0.03` | Valley half-width (Gaussian sigma, cells) = `valley_width × √(catchment cells)` |
 | `rivers.min_valley_sigma` | float | `1.0` | Narrowest valley sigma, in cells |
 | `rivers.stall_steps` | int | `50` | Steps without progress towards the sea before switching to steepest descent |
-| `cs2.max_height_m` | float | `4096.0` | Height spanned by a CS2 16-bit heightmap at the editor's default scale; the UI's peak-height maximum |
+| `cs2.max_height_m` | float | `4096.0` | Height spanned by a CS2 16-bit heightmap at the editor's default scale; the vertical-scale maximum |
+| `cs2.editor_sea_level_m` | float | `511.7` | The map editor's sea level (0–2000 m); exported heights put the model's sea level here. The default for the UI's sea-level field |
 | `cs2.world_width_km` | float | `57.344` | Side of the CS2 world map; the whole generated map is drawn this wide, with axes in km |
 | `cs2.playable_width_km` | float | `14.336` | Side of the CS2 playable area (what a heightmap covers), outlined at the centre of the world map |
 | `ui.host` / `ui.port` | str / int | `127.0.0.1` / `9000` | Address the web UI serves on |
 | `ui.open_browser` | bool | `true` | Open the page in the browser when the UI starts |
-| `ui.peak_height_m` | float | `1000.0` | Default peak-height slider value: height 1.0 is labelled as this many metres |
-| `ui.peak_height_min_m` / `ui.peak_height_step_m` | float | `100.0` / `10.0` | Peak-height slider minimum and step, in metres |
+| `ui.vertical_scale_m` | float | `2000.0` | Default vertical scale: metres per unit of normalised height (the world's lowest to highest point), calibrated to real terrain's slopes |
+| `ui.vertical_scale_min_m` / `ui.vertical_scale_step_m` | float | `100.0` / `10.0` | Vertical-scale slider minimum and step, in metres |
 | `ui.sea_fraction_max` | float | `0.95` | Sea slider maximum (fraction of the map) |
 | `paths.output_dir` | path | `output` | Folder where `app.main` writes maps (git-ignored) |
 
@@ -499,11 +540,12 @@ python -m app.main --config my_config.yaml
 
 ### `app.ui`: web UI
 
-Serves a single page with a seed field, **Generate** button, peak-height and sea sliders,
+Serves a single page with a seed field, **Generate** and **Export heightmaps** buttons, vertical-scale and sea sliders, an editor sea-level field,
 progress bar and the map. It uses Python's standard-library HTTP server, with no extra
 dependencies. Maps are generated one at a time in a background thread (a second request while one
-is running is refused). Heights stay normalised (0–1) internally; the peak-height slider only
-labels them in metres, from `ui.peak_height_min_m` up to `cs2.max_height_m`.
+is running is refused). Heights stay normalised (0–1) internally; the vertical scale (from
+`ui.vertical_scale_min_m` up to `cs2.max_height_m`) and editor sea level set how they are labelled
+and exported in metres.
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -521,8 +563,8 @@ Endpoints (for scripting):
 | `GET /` | The page |
 | `POST /api/generate` with `{"seed": <int>, "sea_percent": <number>}` | Start a job (`sea_percent` optional, 0 to `ui.sea_fraction_max` × 100); returns `{"job": <id>}`, 409 if one is running, 400 for a bad seed or sea percentage |
 | `GET /api/progress/<id>` | `{"fraction", "message", "done", "error", "info"}`; when done, `info` gives the sea level, highest point, sea fraction, river counts and `grid_points` |
-| `GET /api/export/<id>?kind=<world\|playable>&peak=<m>&cx=<col>&cy=<row>` | That view's CS2 heightmap as a download (4096 × 4096 16-bit PNG named after its settings); both are made on the first request and cached |
-| `GET /api/image/<id>?peak=<m>&cx=<col>&cy=<row>` | The finished world map as PNG, labelled with height 1.0 = `<m>` metres, rolled so grid cell (`cx`, `cy`) is at the centre inside the outlined playable area (default: the middle cell; 400 if outside the grid) |
+| `GET /api/export/<id>?kind=<world\|playable>&scale=<m>&sl=<m>&cx=<col>&cy=<row>` | That view's CS2 heightmap as a download (4096 × 4096 16-bit PNG named after its settings); both are made on the first request and cached |
+| `GET /api/image/<id>?scale=<m>&sl=<m>&cx=<col>&cy=<row>` | The finished world map as PNG, labelled in metres with vertical scale `scale` and editor sea level `sl` (0–2000 m), rolled so grid cell (`cx`, `cy`) is at the centre inside the outlined playable area (default: the middle cell; 400 if outside the grid) |
 
 ### `util/readme_figures.py`: README figures
 
@@ -649,7 +691,8 @@ result.river_area   # catchment area of each river cell (0 elsewhere)
 | Name | Module | Description |
 |---|---|---|
 | `generate_terrain(config, seed, progress=None)` | `app.pipeline` | The whole pipeline; returns a `TerrainResult` (field, sea level, rivers, state); `.centred_on(cx, cy)` rolls it so a cell is at the centre |
-| `export_heightmaps(result, config, sea_percent, cx, cy, peak_m)` | `app.export` | The world map and playable-area heightmaps (4096 × 4096 16-bit PNGs, as `ExportFile(filename, png)`) for a view |
+| `HeightMapping(vertical_scale_m, sea_level_m, model_sea_level)` | `app.heights` | Normalised height ↔ game metres (`.metres(h)`, `.normalised(m)`), putting the model's sea level at the editor's |
+| `export_heightmaps(result, config, sea_percent, cx, cy, vertical_scale_m, sea_level_m)` | `app.export` | The world map and playable-area heightmaps (4096 × 4096 16-bit PNGs, as `ExportFile(filename, png)`) for a view |
 | `playable_crop(config, field)` | `app.pipeline` | The central playable area of a world-map field (400 × 400 of 1600 × 1600) |
 | `generate_height_field(config, seed, progress=None)` | `app.pipeline` | Only the raw height field: returns `(LayeredDrunk, field)` |
 | `build_layer(config, layer, rng)` | `app.pipeline` | The `CompositeDrunk` for one `LayerConfig` (an entry of `config.layers`) |
@@ -679,7 +722,7 @@ The tests (`tests/`) use small maps and run in about a second:
 | `test_drunk.py` | A walk depends only on its own seed; steps have the right length; deposit shapes and amplitudes are as configured; homeward bias keeps drunks closer to home; out-of-range seeds are refused |
 | `test_terrain.py` | Resampling, Poisson-disk spacing, power-log spacing, sea fraction; hollow filling only raises cells and makes every cell drain (wrap-around and cut-out grids); river carving drains and is reproducible; the whole pipeline is reproducible, in [0, 1], has the requested sea and drains; re-centring moves the chosen cell to the centre and keeps every height and river |
 | `test_config.py` | The shipped config loads; a missing setting is named in the error; out-of-range values are refused |
-| `test_export.py` | Both heightmaps are square 16-bit greyscale PNGs (4096 × 4096 in the game's format), named and tagged with their settings; heights map to metres correctly; the world map's centre matches the playable heightmap; north is at the top |
+| `test_export.py` | Both heightmaps are square 16-bit greyscale PNGs (4096 × 4096 in the game's format), named and tagged with their settings; the coastline lands on the editor's sea level, one unit is the vertical scale, and heights below 0 m clip to 0; the world map's centre matches the playable heightmap; north is at the top |
 | `test_rendering.py` | A terrain map is saved as a PNG spanning 0 to the world width on both axes, labelled in km, with the map exactly at `MAP_RECT` (which the UI relies on to turn clicks into map positions) and the playable area outlined at the centre |
 
 "Drains" is checked strictly: every land cell must have a strictly lower neighbour, so following
@@ -820,6 +863,7 @@ drunk/
 │   ├── drainage.py          # Hollow filling and D8 flow routing (numba)
 │   ├── rivers.py            # River drunks: walk the drainage, carve graded valleys (numba)
 │   ├── rendering.py         # Terrain-map PNGs (axes in km, heights optionally in m)
+│   ├── heights.py           # Normalised height to game metres (vertical scale, editor sea level)
 │   └── export.py            # CS2 heightmap export: world map and playable area, 4096² 16-bit PNGs
 ├── tests/                   # pytest suite
 ├── util/                    # Standalone tools
