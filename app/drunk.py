@@ -1,4 +1,17 @@
-"""Random walkers ("drunks") on the 2D plane that leave a trail of Gaussian deposits."""
+"""Drunkard's walks: gangs of random walkers that leave trails of Gaussian bumps on a wrap-around map.
+
+A drunk starts at its home and staggers one step of ``step_km`` per step in a
+random direction, biased back towards home: directions follow a von Mises
+distribution centred on the bearing home, with concentration
+``kappa_max * (1 - exp(-r / r0))`` at distance ``r`` from home (``r0`` is
+``R0_STEPS`` steps). After each step it deposits a Gaussian bump with a random
+orientation, standard deviation ``step_km`` along its major axis and
+``step_km * sqrt(u)`` (``u`` uniform in (0, 1]) along its minor axis. The k-th
+bump has height ``DECAY ** k``.
+
+A ``Gang`` is a group of drunks sharing a step length. Walking and depositing
+run together in one parallel numba kernel, so no deposit list is ever stored.
+"""
 
 import math
 from dataclasses import dataclass
@@ -6,109 +19,94 @@ from dataclasses import dataclass
 import numba
 import numpy as np
 
-from app.deposits import Deposits
+# Steps each drunk takes.
+STEPS = 1000
+# Height of the k-th bump is DECAY ** k.
+DECAY = 0.999
+# Distance (in steps) over which the homeward bias builds up.
+R0_STEPS = 10.0
+# Bumps are truncated this many standard deviations from their centre.
+CUTOFF_SD = 4.0
+# Drunks are split into this many groups, each summed on its own grid, so the result doesn't depend on thread count.
+CHUNKS = 16
+# A gang is rendered on a grid with at least this many cells per bump standard deviation, then upsampled.
+CELLS_PER_SD = 1.5
 
 
-@dataclass(frozen=True)
-class Drunk:
-    """One drunk's parameters: who it is, where it starts, how it walks and what it deposits.
-
-    The drunk starts at ``home`` and staggers ``step_size`` in a random
-    direction on each step, biased back towards home: directions follow a
-    von Mises distribution centred on the bearing to ``home``, whose
-    concentration grows with distance ``r`` from home as
-    ``kappa = kappa_max * (1 - exp(-r / r0))``. Near home directions are
-    close to uniform, while far away the drunk is increasingly drawn back.
-    ``kappa_max = 0`` gives a plain uniform random walk.
-
-    After every step the drunk deposits a Gaussian at its new location, with
-    uniformly random axis directions, variance ``variance`` along its major
-    axis and ``variance * u`` (``u`` uniform in (0, 1]) along its minor axis.
-    The k-th deposit (k = 0, 1, ...) has peak amplitude
-    ``initial_amplitude * decay**k``, so later deposits are weaker.
-
-    All randomness comes from ``seed``, so each walk is reproducible.
-    Walking is done for many drunks at once by ``walk_drunks``.
-    """
-
-    seed: int
-    step_size: float = 1.0
-    kappa_max: float = 2.0
-    r0: float = 10.0
-    variance: float = 1.0
-    decay: float = 0.999
-    initial_amplitude: float = 1.0
-    home: tuple[float, float] = (0.0, 0.0)
-
-    def __post_init__(self) -> None:
-        """Check the seed fits numba's random generator, which takes 32-bit seeds."""
-        if not 0 <= self.seed < 2**32:
-            raise ValueError(f"a drunk's seed must be in [0, 2**32), got {self.seed}")
+@numba.njit(cache=True)
+def _splat(grid: np.ndarray, x: float, y: float, angle: float, sd_major: float, sd_minor: float, amp: float) -> None:
+    """Add a rotated Gaussian bump centred on ``(x, y)`` (in cells) to the wrap-around ``grid``."""
+    n = grid.shape[0]
+    c, s = math.cos(angle), math.sin(angle)
+    ia, ib = 1.0 / sd_major**2, 1.0 / sd_minor**2
+    qa, qb, qc = c * c * ia + s * s * ib, c * s * (ia - ib), s * s * ia + c * c * ib
+    r = int(CUTOFF_SD * sd_major) + 1
+    ix, iy = int(round(x)), int(round(y))
+    for i in range(iy - r, iy + r + 1):
+        dy = i - y
+        row = grid[i % n]
+        for j in range(ix - r, ix + r + 1):
+            dx = j - x
+            q = qa * dx * dx + 2.0 * qb * dx * dy + qc * dy * dy
+            if q < CUTOFF_SD * CUTOFF_SD:
+                row[j % n] += amp * math.exp(-0.5 * q)
 
 
 @numba.njit(parallel=True, cache=True)
-def _walk(
-    seeds: np.ndarray,
-    home_x: np.ndarray,
-    home_y: np.ndarray,
-    step_size: np.ndarray,
-    kappa_max: np.ndarray,
-    r0: np.ndarray,
-    variance: np.ndarray,
-    decay: np.ndarray,
-    initial_amplitude: np.ndarray,
-    num_steps: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Walk every drunk ``num_steps`` steps; returns deposit arrays of shape ``(drunks, num_steps)``.
-
-    Drunks are walked in parallel. Each one reseeds the generator of the
-    thread walking it and then draws all its numbers on that thread, so its
-    walk depends only on its own seed.
-    """
-    n = seeds.shape[0]
-    xs = np.empty((n, num_steps))
-    ys = np.empty((n, num_steps))
-    angle = np.empty((n, num_steps))
-    var_major = np.empty((n, num_steps))
-    var_minor = np.empty((n, num_steps))
-    amplitude = np.empty((n, num_steps))
-    for j in numba.prange(n):
-        np.random.seed(seeds[j])
-        x = home_x[j]
-        y = home_y[j]
-        for k in range(num_steps):
-            r = math.hypot(x - home_x[j], y - home_y[j])
-            kappa = kappa_max[j] * (1.0 - math.exp(-r / r0[j]))
-            # At home kappa is 0, so the undefined bearing has no effect.
-            heading = np.random.vonmises(math.atan2(home_y[j] - y, home_x[j] - x), kappa)
-            x += step_size[j] * math.cos(heading)
-            y += step_size[j] * math.sin(heading)
-            xs[j, k] = x
-            ys[j, k] = y
-            # Axes are symmetric under a half-turn, so [0, pi) covers every orientation.
-            angle[j, k] = np.random.uniform(0.0, math.pi)
-            var_major[j, k] = variance[j]
-            # 1 - random() lies in (0, 1], so the minor variance is never zero.
-            var_minor[j, k] = variance[j] * (1.0 - np.random.random())
-            amplitude[j, k] = initial_amplitude[j] * decay[j] ** k
-    return xs, ys, angle, var_major, var_minor, amplitude
+def _walk(seeds: np.ndarray, homes: np.ndarray, kappa_max: np.ndarray, step: float, n: int) -> np.ndarray:
+    """Walk every drunk and sum its bumps on an ``n`` x ``n`` wrap-around grid; positions are in cells."""
+    grids = np.zeros((CHUNKS, n, n))
+    r0 = R0_STEPS * step
+    for chunk in numba.prange(CHUNKS):
+        for d in range(chunk, len(seeds), CHUNKS):
+            np.random.seed(seeds[d])
+            hx, hy = homes[d, 0], homes[d, 1]
+            x, y, amp = hx, hy, 1.0
+            for _ in range(STEPS):
+                kappa = kappa_max[d] * (1.0 - math.exp(-math.hypot(x - hx, y - hy) / r0))
+                heading = np.random.vonmises(math.atan2(hy - y, hx - x), kappa)
+                x += step * math.cos(heading)
+                y += step * math.sin(heading)
+                angle = np.random.uniform(0.0, math.pi)
+                _splat(grids[chunk], x, y, angle, step, step * math.sqrt(1.0 - np.random.random()), amp)
+                amp *= DECAY
+    return grids.sum(axis=0)
 
 
-def walk_drunks(drunks: list[Drunk], num_steps: int) -> Deposits:
-    """Walk each drunk ``num_steps`` steps from its home and return all their deposits.
+def _upsample(field: np.ndarray, n: int) -> np.ndarray:
+    """Band-limited (Fourier) upsampling of a square wrap-around field to ``n`` x ``n``."""
+    m = field.shape[0]
+    if m == n:
+        return field
+    spectrum = np.fft.rfft2(field)
+    padded = np.zeros((n, n // 2 + 1), dtype=complex)
+    h = m // 2
+    padded[:h, :h] = spectrum[:h, :h]
+    padded[n - h + 1 :, :h] = spectrum[h + 1 :, :h]
+    return np.fft.irfft2(padded, s=(n, n)) * (n / m) ** 2
 
-    Deposits are ordered drunk by drunk, each drunk's in step order, so drunk
-    ``j``'s path is entries ``j * num_steps`` to ``(j + 1) * num_steps - 1``
-    of ``x`` and ``y`` (preceded by its ``home``).
-    """
-    def column(name: str, dtype: type = np.float64) -> np.ndarray:
-        """One parameter of every drunk, as an array."""
-        return np.array([getattr(d, name) for d in drunks], dtype=dtype)
 
-    homes = np.array([d.home for d in drunks], dtype=np.float64).reshape(len(drunks), 2)
-    arrays = _walk(
-        column("seed", np.int64), homes[:, 0].copy(), homes[:, 1].copy(), column("step_size"),
-        column("kappa_max"), column("r0"), column("variance"), column("decay"), column("initial_amplitude"),
-        int(num_steps),
-    )
-    return Deposits(*(a.ravel() for a in arrays))
+@dataclass(frozen=True, eq=False)
+class Gang:
+    """Drunks sharing a step length: one seed each, homes in km (``(n, 2)``) and homeward biases."""
+
+    seeds: np.ndarray
+    homes_km: np.ndarray
+    kappa_max: np.ndarray
+    step_km: float
+
+    def __len__(self) -> int:
+        """Number of drunks."""
+        return len(self.seeds)
+
+    def field(self, side_km: float, n: int) -> np.ndarray:
+        """The gang's summed bumps on an ``n`` x ``n`` grid wrapping round a square ``side_km`` across.
+
+        Big bumps are smooth, so the walk is rendered on the coarsest grid
+        that still has ``CELLS_PER_SD`` cells per bump and upsampled.
+        """
+        m = min(n, 2 * math.ceil(CELLS_PER_SD * side_km / self.step_km / 2))
+        cell_km = side_km / m
+        coarse = _walk(self.seeds.astype(np.int64), self.homes_km / cell_km, self.kappa_max.astype(np.float64),
+                       self.step_km / cell_km, m)
+        return _upsample(coarse, n)

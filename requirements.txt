@@ -1,11 +1,6 @@
 # Pinned pip dependencies for the "drunk" conda environment.
-# Regenerate with: conda run -n drunk pip list --format=freeze
-imagecodecs==2026.8.16
 llvmlite==0.50.0
-matplotlib==3.11.2
 numba==0.68.0
 numpy==2.5.3
 pillow==12.3.0
 pytest==9.1.1
-PyYAML==6.0.3
-tifffile==2026.9.20
