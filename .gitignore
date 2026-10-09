@@ -37,5 +37,5 @@ tmp/
 # Generated outputs
 output/
 
-# Downloaded reference elevation tiles (large; see README)
-data/
+# Raw FABDEM tiles (2.7 GB; fetched by fabdem/download.py). The cut reference squares in fabdem/data/windows/ are kept, via LFS.
+fabdem/data/tiles/

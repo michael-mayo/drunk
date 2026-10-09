@@ -1,0 +1,62 @@
+city  Vancouver              world   0.44   0.16   0.24   1.13   0.38   0.00   0.38   0.71   centre   0.74   0.46   0.26   1.25   0.25   0.01   0.26   0.71
+city  Seattle                world   0.47   0.21   0.22   3.18   0.24   0.02   0.34   0.64   centre   0.64   0.25   0.37   0.37   0.39   0.01   0.36   0.75
+city  San Francisco          world   0.44   0.22   0.25   1.15   0.50   0.01   0.41   0.67   centre   0.60   0.40   0.26   1.23   0.44   0.01   0.36   0.68
+city  Rio de Janeiro         world   0.42   0.10   0.09   3.81   0.46   0.02   0.25   0.59   centre   0.67   0.42   0.12   2.72   0.52   0.01   0.50   0.65
+city  Cape Town              world   0.46   0.09   0.13   3.38   0.55   0.01   0.31   0.61   centre   0.84   0.59   0.17   1.70   0.44   0.00   0.63   0.74
+city  Wellington             world   0.36   0.20   0.31   1.01   0.64   0.01   0.48   0.53   centre   0.52   0.32   0.37   0.47   0.30   0.01   0.47   0.53
+city  Genoa                  world   0.36   0.36   0.41   0.39   0.45   0.00   0.50   0.52   centre   0.62   0.36   0.30   0.90   0.42   0.00   0.69   0.55
+city  Hong Kong              world   0.37   0.08   0.19   1.77   0.61   0.01   0.72   0.73   centre   0.69   0.29   0.25   1.02   0.25   0.02   1.05   0.61
+city  Valparaiso             world   0.49   0.25   0.38   0.54   0.50   0.01   0.40   0.55   centre   0.62   0.65   0.49  -0.19   0.42   0.01   0.45   0.51
+city  Naples                 world   0.57   0.20   0.14   2.40   0.36   0.02   0.21   0.59   centre   0.69   0.61   0.24   1.52   0.27   0.01   0.29   0.65
+city  Marseille              world   0.53   0.26   0.30   1.06   0.48   0.01   0.30   0.57   centre   0.55   0.53   0.25   1.46   0.40   0.00   0.36   0.60
+city  Busan                  world   0.41   0.14   0.22   1.47   0.47   0.01   0.60   0.62   centre   0.72   0.46   0.23   1.36   0.08   0.00   0.82   0.62
+city  Kobe                   world   0.55   0.39   0.22   1.52   0.34   0.01   0.30   0.57   centre   0.66   0.74   0.28   0.72   0.30   0.00   0.33   0.60
+city  Copenhagen             world   0.42   0.31   0.33   0.77   0.49   0.09   0.11   0.63   centre   0.64   0.39   0.23   1.56   0.25   0.04   0.16   0.62
+city  Buenos Aires           world   0.42   0.36   0.45   0.10   0.41   0.07   0.12   0.59   centre   0.57   0.49   0.33   0.71   0.36   0.07   0.07   0.60
+city  Pittsburgh             world   0.22   0.12   0.60  -0.78   0.01   0.02   0.30   0.51   centre   0.48   0.29   0.51  -0.25   0.03   0.02   0.36   0.57
+city  Lyon                   world   0.50   0.39   0.25   1.63   0.01   0.01   0.29   0.55   centre   0.65   0.49   0.27   0.91   0.01   0.03   0.25   0.59
+city  Budapest               world   0.49   0.33   0.20   2.03   0.01   0.03   0.29   0.58   centre   0.72   0.64   0.20   1.61   0.03   0.02   0.37   0.60
+city  Porto                  world   0.44   0.29   0.33   0.96   0.41   0.01   0.28   0.53   centre   0.62   0.49   0.42   0.29   0.19   0.01   0.31   0.61
+city  Lisbon                 world   0.42   0.33   0.26   1.14   0.29   0.01   0.25   0.59   centre   0.60   0.37   0.39   0.20   0.41   0.01   0.31   0.60
+city  Turin                  world   0.52   0.36   0.15   3.09   0.00   0.00   0.09   0.54   centre   0.66   0.58   0.22   1.83   0.00   0.01   0.08   0.55
+city  Salt Lake City         world   0.54   0.53   0.29   0.71   0.09   0.00   0.38   0.59   centre   0.72   0.62   0.18   1.61   0.00   0.00   0.22   0.64
+city  Innsbruck              world   0.50   0.26   0.44   0.20   0.00   0.00   0.46   0.58   centre   0.80   0.73   0.33   0.66   0.00   0.00   0.63   0.60
+city  Denver                 world   0.52   0.57   0.24   1.71   0.01   0.00   0.16   0.55   centre   0.75   0.67   0.49   0.01   0.00   0.01   0.08   0.65
+city  Kathmandu              world   0.51   0.27   0.46   0.23   0.00   0.01   0.45   0.52   centre   0.62   0.48   0.14   3.16   0.00   0.06   0.38   0.54
+city  Medellin               world   0.61   0.48   0.61  -0.73   0.00   0.01   0.35   0.53   centre   0.84   0.76   0.29   0.99   0.00   0.00   0.61   0.63
+city  Mexico City            world   0.58   0.59   0.17   1.77   0.01   0.00   0.29   0.56   centre   0.60   0.29   0.16   4.12   0.00   0.04   0.11   0.60
+city  Geneva                 world   0.58   0.37   0.31   0.98   0.08   0.01   0.31   0.60   centre   0.82   0.45   0.11   4.56   0.09   0.01   0.20   0.67
+city  Munich                 world   0.43   0.50   0.40   0.61   0.01   0.03   0.14   0.50   centre   0.47   0.61   0.41   0.35   0.00   0.06   0.02   0.48
+city  Kansas City            world   0.39   0.28   0.54  -0.36   0.01   0.03   0.26   0.54   centre   0.57   0.37   0.41   0.33   0.02   0.07   0.43   0.55
+wild  Bernese Alps           world   0.56   0.30   0.50  -0.16   0.01   0.00   0.43   0.61
+wild  Central Pyrenees       world   0.49   0.28   0.51  -0.01   0.00   0.00   0.43   0.57
+wild  Colorado Rockies       world   0.43   0.34   0.54  -0.20   0.01   0.00   0.39   0.56
+wild  Scottish Highlands     world   0.36   0.11   0.42   0.37   0.04   0.00   0.42   0.65
+wild  Appalachians           world   0.14   0.18   0.50   0.03   0.00   0.02   0.29   0.46
+wild  Southern Alps          world   0.50   0.23   0.52  -0.27   0.01   0.00   0.55   0.57
+wild  Patagonian Andes       world   0.40   0.12   0.52  -0.14   0.03   0.02   0.52   0.60
+wild  High Atlas             world   0.58   0.47   0.38   0.42   0.00   0.00   0.32   0.51
+wild  Greater Caucasus       world   0.54   0.29   0.49   0.06   0.00   0.00   0.34   0.57
+wild  Eastern Carpathians    world   0.43   0.24   0.44   0.39   0.00   0.00   0.47   0.52
+wild  Japanese Alps          world   0.48   0.41   0.40   0.42   0.00   0.00   0.43   0.54
+wild  Taiwan Central Range   world   0.54   0.28   0.51  -0.05   0.00   0.01   0.41   0.53
+wild  Sierra Nevada          world   0.54   0.45   0.56  -0.11   0.01   0.00   0.16   0.58
+wild  Massif Central         world   0.42   0.38   0.50  -0.08   0.00   0.01   0.31   0.51
+wild  Black Forest           world   0.39   0.39   0.54  -0.38   0.00   0.01   0.35   0.51
+wild  Ozarks                 world   0.31   0.22   0.43   0.54   0.00   0.01   0.29   0.50
+wild  Mantiqueira            world   0.25   0.26   0.35   0.96   0.01   0.02   0.37   0.51
+wild  Tasmanian Highlands    world   0.49   0.37   0.57  -0.34   0.09   0.00   0.17   0.63
+wild  Drakensberg            world   0.53   0.51   0.52  -0.04   0.00   0.00   0.40   0.51
+wild  Ethiopian Highlands    world   0.55   0.43   0.39   0.62   0.00   0.00   0.35   0.51
+wild  Ryfylke fjords         world   0.39   0.25   0.52  -0.25   0.13   0.02   0.30   0.68
+wild  Brittany coast         world   0.39   0.46   0.49   0.19   0.16   0.03   0.14   0.53
+wild  Big Sur                world   0.51   0.32   0.45   0.09   0.29   0.00   0.44   0.52
+wild  Dalmatian coast        world   0.45   0.24   0.33   0.92   0.38   0.05   0.25   0.59
+wild  Maine coast            world   0.34   0.06   0.21   3.11   0.60   0.02   0.13   0.87
+wild  Chilean fjords         world   0.45   0.12   0.41   0.26   0.13   0.01   0.45   0.63
+wild  Corsica                world   0.55   0.33   0.39   0.52   0.02   0.00   0.44   0.54
+wild  Konkan coast           world   0.44   0.33   0.42   0.22   0.22   0.01   0.24   0.53
+wild  Nebraska plains        world   0.45   0.42   0.51   0.06   0.00   0.09   0.19   0.51
+wild  Pampas                 world   0.27   0.37   0.45   0.33   0.03   0.11   0.03   0.75
+
+60 world squares, 30 city centres; columns: H fine, H coarse, HI, skew, water, hollows, concavity, tau

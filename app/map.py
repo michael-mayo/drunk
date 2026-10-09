@@ -33,7 +33,7 @@ MAX_HEIGHT_M = 4096.0
 # The map editor's default sea level, in metres.
 EDITOR_SEA_LEVEL_M = 511.7
 # Default view settings: share of the map under the sea, and metres from lowest to highest point.
-SEA_FRACTION = 0.4
+SEA_FRACTION = 0.3
 VERTICAL_M = 2500.0
 # Preview colours: (position, RGB) stops for sea (by depth, 0 = coast) and land (by height, 0 = coast).
 SEA_COLOURS = [(0.0, (118, 178, 214)), (0.3, (66, 128, 186)), (1.0, (22, 52, 104))]
@@ -67,6 +67,9 @@ class Map:
         self.gangs: list[Gang] = []
         self.weights: list[float] = []
         self.height = np.zeros((grid, grid))
+        # The sea share and city site (centre cell of the playable area) chosen by the builder.
+        self.sea_fraction = SEA_FRACTION
+        self.site = (grid // 2, grid // 2)
 
     def add(self, gang: Gang, weight: float, field: np.ndarray | None = None) -> None:
         """Add ``gang`` with ``weight``; ``field`` is its already rendered field, if at hand."""

@@ -5,12 +5,14 @@ a time, in a background thread; the page polls ``/api/state`` and redraws
 the map whenever a gang of drunks is accepted. Endpoints:
 
 - ``GET /``: the page.
-- ``POST /api/build`` with ``{"seed": int, "trials": int}``: start building (409 while a build runs).
-- ``GET /api/state``: build progress, objective history, statistics and height quantiles.
+- ``POST /api/build`` with ``{"seed": int, "trials": int, "sea": percent or null}``: start building with that sea share
+  (null: the builder chooses it); 409 while a build runs.
+- ``GET /api/state``: build progress, objective history, statistics, chosen sea share and city site, height quantiles.
 - ``GET /api/preview.png?sea=&scale=&cx=&cy=``: the map, rolled so cell ``(cx, cy)`` is centred.
 - ``GET /api/heightmap/<world|playable>.png?sea=&scale=&sl=&cx=&cy=``: a CS2 heightmap download.
 """
 
+import errno
 import json
 import platform
 import subprocess
@@ -32,6 +34,7 @@ from app.build_map import STAT_NAMES
 from app.build_map import TRIALS
 from app.build_map import build_map
 from app.build_map import measure
+from app.build_map import nearest
 from app.map import EDITOR_SEA_LEVEL_M
 from app.map import GRID
 from app.map import MAX_HEIGHT_M
@@ -57,8 +60,12 @@ class Build:
     history: list[float] = field(default_factory=list)
     accepted: int = 0
     message: str = "Choose a seed and press Build."
-    stats: dict[str, list[float]] = field(default_factory=dict)
+    # Per size ("world", "city"): the map's statistics, the mean of its nearest real squares', and their names.
+    stats: dict[str, dict[str, list]] = field(default_factory=dict)
     quantiles: list[float] = field(default_factory=list)
+    # The builder's choices: share of the map under the sea, and the centre cell of the best city site.
+    sea_fraction: float = SEA_FRACTION
+    site: tuple[int, int] = (GRID // 2, GRID // 2)
     error: str | None = None
 
 
@@ -66,15 +73,27 @@ STATE = Build()
 LOCK = threading.Lock()
 
 
-def _snapshot(world: Map) -> tuple[dict[str, list[float]], list[float]]:
-    """The map's statistics, and the percentiles 0-100 of its heights normalised to [0, 1]."""
+def _snapshot(world: Map) -> tuple[dict[str, dict[str, list]], list[float]]:
+    """The map's statistics beside its nearest real squares' (None where undefined), and the percentiles 0-100
+    of its heights normalised to [0, 1]."""
     z = world.height
     q = np.percentile(z, np.arange(101))
     q = (q - q[0]) / (q[-1] - q[0]) if q[-1] > q[0] else np.zeros(101)
-    return {k: v.tolist() for k, v in measure(z).items()}, q.round(5).tolist()
+    measured, _ = measure(z, world.sea_fraction)
+    def clean(v: np.ndarray) -> list[float | None]:
+        return [float(x) if np.isfinite(x) else None for x in v]
+
+    stats = {}
+    for size, v in measured.items():
+        names, real = REFERENCE[size]
+        like = nearest(v, size)[1]
+        stats[size] = {"map": clean(v), "like": like,
+                       "real": clean(np.nanmean(real[[names.index(n) for n in like]], axis=0) if like
+                                     else np.nanmean(real, axis=0))}
+    return stats, q.round(5).tolist()
 
 
-def _run(seed: int, trials: int) -> None:
+def _run(seed: int, trials: int, sea_fraction: float | None) -> None:
     """Build thread: build the map, publishing progress into ``STATE``."""
     def progress(world: Map, trial: int, total: int, best: float, accepted: bool, text: str) -> None:
         snapshot = _snapshot(world) if accepted else None
@@ -85,9 +104,10 @@ def _run(seed: int, trials: int) -> None:
             if snapshot:
                 STATE.accepted += 1
                 STATE.stats, STATE.quantiles = snapshot
+                STATE.sea_fraction, STATE.site = world.sea_fraction, world.site
 
     try:
-        build_map(seed, trials, progress)
+        build_map(seed, trials, sea_fraction, progress)
         with LOCK:
             STATE.message = f"Done: {STATE.accepted} gangs kept out of {trials}."
     except Exception:
@@ -163,15 +183,19 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             seed, trials = int(body["seed"]) % 2**32, min(max(int(body.get("trials", TRIALS)), 1), 1000)
+            sea = body.get("sea")
+            sea_fraction = None if sea is None else min(max(float(sea), 0.0), 95.0) / 100.0
         except (ValueError, KeyError, TypeError):
-            self._json({"error": "expected {\"seed\": int, \"trials\": int}"}, HTTPStatus.BAD_REQUEST)
+            self._json({"error": "expected {\"seed\": int, \"trials\": int, \"sea\": percent or null}"},
+                       HTTPStatus.BAD_REQUEST)
             return
         with LOCK:
             if STATE.running:
                 self._json({"error": "a build is already running"}, HTTPStatus.CONFLICT)
                 return
-            STATE.__init__(seed=seed, running=True, trials=trials, message="Starting…")
-        threading.Thread(target=_run, args=(seed, trials), daemon=True).start()
+            STATE.__init__(seed=seed, running=True, trials=trials, message="Starting…",
+                           sea_fraction=SEA_FRACTION if sea_fraction is None else sea_fraction)
+        threading.Thread(target=_run, args=(seed, trials, sea_fraction), daemon=True).start()
         self._json({"ok": True})
 
     def log_message(self, format: str, *args: object) -> None:
@@ -191,8 +215,14 @@ def open_browser(url: str) -> None:
 
 def main() -> None:
     """Serve the UI until interrupted, opening it in the browser."""
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
     url = f"http://localhost:{PORT}/"
+    try:
+        server = ThreadingHTTPServer((HOST, PORT), Handler)
+    except OSError as error:
+        if error.errno != errno.EADDRINUSE:
+            raise
+        raise SystemExit(f"Port {PORT} is already in use: the app may already be running (open {url}), "
+                         f"or another program is using the port.") from None
     print(f"Drunk terrain UI at {url} (Ctrl+C to stop)")
     open_browser(url)
     try:
@@ -204,7 +234,7 @@ def main() -> None:
 CONFIG = json.dumps({
     "grid": GRID, "playable": PLAYABLE_KM / WORLD_KM, "worldKm": WORLD_KM, "maxHeight": MAX_HEIGHT_M,
     "sea": SEA_FRACTION * 100, "scale": VERTICAL_M, "seaLevel": EDITOR_SEA_LEVEL_M, "trials": TRIALS,
-    "statNames": STAT_NAMES, "reference": {k: [m.tolist(), s.tolist()] for k, (m, s) in REFERENCE.items()},
+    "statNames": STAT_NAMES, "sd": {k: np.nanstd(v, axis=0).tolist() for k, (_, v) in REFERENCE.items()},
 })
 
 PAGE = """<!doctype html>
@@ -236,6 +266,8 @@ PAGE = """<!doctype html>
   input[type=number] { width: 100%; padding: 7px 9px; font: inherit; color: var(--text); background: var(--bg);
                        border: 1px solid var(--line); border-radius: 6px; }
   input[type=range] { flex: 1; accent-color: var(--accent); }
+  input[type=checkbox] { margin: 0; accent-color: var(--accent); }
+  input[type=range]:disabled { opacity: .45; }
   button { padding: 8px 14px; font: inherit; font-weight: 600; color: #fff; background: var(--accent);
            border: 0; border-radius: 6px; cursor: pointer; white-space: nowrap; }
   button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
@@ -272,6 +304,8 @@ PAGE = """<!doctype html>
       <div class="row"><label for="seed">Seed</label><input id="seed" type="number" step="1" value="41">
         <button class="ghost" id="dice" title="Random seed">🎲</button></div>
       <div class="row"><label for="trials">Gangs to try</label><input id="trials" type="number" min="1" max="1000"></div>
+      <div class="row"><label for="autoSea">Auto sea</label><input id="autoSea" type="checkbox">
+        <span class="muted">let the builder choose the sea share</span></div>
       <div class="row"><button id="build" style="flex:1">Build map</button></div>
       <progress id="progress" value="0" max="1"></progress>
       <div id="status" class="muted"></div>
@@ -298,7 +332,7 @@ PAGE = """<!doctype html>
     <section>
       <h2>Realism</h2>
       <svg id="chart" viewBox="0 0 300 70" preserveAspectRatio="none"></svg>
-      <div class="muted" id="best">Objective: RMS z-score against real terrain (0 = typical real terrain).</div>
+      <div class="muted" id="best">Objective: distance to the most similar real squares (0 = a match).</div>
       <table id="stats"></table>
     </section>
   </aside>
@@ -317,7 +351,7 @@ PAGE = """<!doctype html>
 const C = __CONFIG__;
 const $ = id => document.getElementById(id);
 const view = { sea: C.sea, scale: C.scale, sl: C.seaLevel, cx: C.grid / 2, cy: C.grid / 2 };
-let state = null, shownKey = "", loading = false;
+let state = null, shownKey = "", loading = false, adopted = -1;
 
 $("trials").value = C.trials; $("sea").value = view.sea; $("scale").max = C.maxHeight;
 $("scale").value = view.scale; $("sl").value = view.sl;
@@ -360,19 +394,24 @@ function chart(history) {
   $("chart").innerHTML = `<line x1="0" x2="300" y1="67" y2="67" stroke="var(--line)"/>` +
     `<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
   $("best").textContent = `Objective ${history[history.length - 1].toFixed(3)} after ${history.length} of ${state.trials} gangs ` +
-    `(${state.accepted} kept). 0 = typical real terrain.`;
+    `(${state.accepted} kept). 0 = matches its nearest real squares.`;
 }
 
 function table(stats) {
   if (!stats.world) { $("stats").innerHTML = ""; return; }
   const cell = (size, i) => {
-    const [mean, sd] = C.reference[size], v = stats[size][i], z = (v - mean[i]) / sd[i];
+    const v = stats[size].map[i], real = stats[size].real[i], sd = C.sd[size][i];
+    const mean = real === null ? "–" : real.toFixed(2);
+    if (v === null || real === null) return `<td>${v === null ? "–" : v.toFixed(2)}</td><td class="muted">${mean}</td><td></td>`;
+    const z = (v - real) / sd;
     const colour = Math.abs(z) < 1 ? "var(--good)" : "var(--bad)";
-    return `<td>${v.toFixed(2)}</td><td class="muted">${mean[i].toFixed(2)}</td><td class="z" style="color:${colour}">${z >= 0 ? "+" : ""}${z.toFixed(1)}σ</td>`;
+    return `<td>${v.toFixed(2)}</td><td class="muted">${mean}</td><td class="z" style="color:${colour}">${z >= 0 ? "+" : ""}${z.toFixed(1)}σ</td>`;
   };
-  $("stats").innerHTML = `<tr><th></th><th colspan="3">playable windows</th><th colspan="3">world</th></tr>` +
+  $("stats").innerHTML = `<tr><th></th><th colspan="3">best city site</th><th colspan="3">world</th></tr>` +
     `<tr><th></th><th>map</th><th>real</th><th>z</th><th>map</th><th>real</th><th>z</th></tr>` +
-    C.statNames.map((name, i) => `<tr><td>${name}</td>${cell("playable", i)}${cell("world", i)}</tr>`).join("");
+    C.statNames.map((name, i) => `<tr><td>${name}</td>${cell("city", i)}${cell("world", i)}</tr>`).join("") +
+    `<tr><td class="muted">like</td><td colspan="3" class="muted">${stats.city.like.join(", ")}</td>` +
+    `<td colspan="3" class="muted">${stats.world.like.join(", ")}</td></tr>`;
 }
 
 async function poll() {
@@ -382,6 +421,14 @@ async function poll() {
     $("status").textContent = state.error || state.message;
     $("build").disabled = state.running;
     $("world").disabled = $("playable").disabled = state.running || !state.accepted;
+    // While building, the sea share is the build's (fixed, or the builder's choice with auto sea), and the view
+    // follows the city site; afterwards they are yours to change.
+    $("sea").disabled = state.running;
+    if (state.running && state.accepted !== adopted) {
+      adopted = state.accepted;
+      view.sea = Math.round(state.sea_fraction * 100); $("sea").value = view.sea;
+      [view.cx, view.cy] = state.site;
+    }
     chart(state.history); table(state.stats); heights(); redraw();
   } finally {
     setTimeout(poll, state && state.running ? 500 : 2000);
@@ -390,9 +437,10 @@ async function poll() {
 
 $("build").onclick = async () => {
   const res = await fetch("/api/build", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ seed: +$("seed").value, trials: +$("trials").value }) });
+    body: JSON.stringify({ seed: +$("seed").value, trials: +$("trials").value,
+                           sea: $("autoSea").checked ? null : view.sea }) });
   if (!res.ok) $("status").textContent = (await res.json()).error;
-  view.cx = view.cy = C.grid / 2;
+  adopted = -1;
   $("build").disabled = true;
 };
 $("dice").onclick = () => { $("seed").value = Math.floor(Math.random() * 100000); };
