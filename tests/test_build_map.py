@@ -5,11 +5,17 @@ import math
 import numpy as np
 
 from app.build_map import REFERENCE
+from app.build_map import STAT_NAMES
 from app.build_map import build_map
+from app.build_map import centre
 from app.build_map import nearest
 from app.build_map import objective
 from app.build_map import stats
+from app.build_map import suggested_relief
 from app.build_map import windows
+
+CONTRAST = STAT_NAMES.index("contrast")
+TAU = STAT_NAMES.index("tau")
 
 
 def test_stats_of_a_rough_and_a_smooth_field() -> None:
@@ -54,6 +60,33 @@ def test_drainage_finds_hollows() -> None:
     assert stats(x + y + noise, land)[5] < 0.05
 
 
+def test_contrast_sees_flat_lowlands() -> None:
+    """Rough hills rising from a flat plain have more contrast than hills as rough at every height."""
+    rng = np.random.default_rng(3)
+    y, x = np.mgrid[0:256, 0:256] / 256.0
+    land = np.ones((256, 256), dtype=bool)
+    texture = rng.normal(size=(256, 256)).cumsum(0).cumsum(1)
+    texture = (texture - texture.mean()) / texture.std()
+    ramp = np.clip((x - 0.4) / 0.6, 0.0, 1.0)
+    stationary = 10.0 * ramp + texture
+    plain_and_hills = 10.0 * ramp + texture * ramp
+    assert stats(plain_and_hills, land)[CONTRAST] > stats(stationary, land)[CONTRAST] + 0.5
+
+
+def test_tau_is_fitted_up_to_the_largest_basin() -> None:
+    """Small basins only (a field with no drainage area as large as 1/256 of it) still have a tau."""
+    rng = np.random.default_rng(4)
+    z = rng.normal(size=(256, 256))
+    land = np.ones(z.shape, dtype=bool)
+    land[::16] = False  # water every 16 rows caps the basins
+    assert np.isfinite(stats(z, land)[TAU])
+
+
+def test_window_centres() -> None:
+    assert centre(0, 1024) == (128, 128)
+    assert centre(6, 1024) == (640, 384)
+
+
 def test_flat_map_is_infinitely_bad() -> None:
     assert objective(np.zeros((1024, 1024)), 0.3) == math.inf
 
@@ -63,7 +96,7 @@ def test_build_only_keeps_improvements() -> None:
     world = build_map(5, trials=4, progress=lambda _, t, n, best, ok, text: history.append((best, ok)))
     scores = [best for best, _ in history]
     assert scores == sorted(scores, reverse=True)
-    assert len(world.gangs) == sum(ok for _, ok in history) >= 1
+    assert world.steps == len(world.gangs) + len(world.plains) == sum(ok for _, ok in history) >= 1
     assert np.isclose(objective(world.height, world.sea_fraction), scores[-1])
 
 
@@ -78,6 +111,14 @@ def test_a_set_sea_share_is_kept() -> None:
     world = build_map(5, trials=4, sea_fraction=0.42, progress=progress)
     assert set(shares) == {0.42}
     assert np.isclose(objective(world.height, 0.42), history[-1])
+
+
+def test_suggested_relief_matches_the_nearest_real_squares() -> None:
+    """A map built at a fixed sea share gets a relief in metres, and none before it has any relief."""
+    world = build_map(5, trials=2, sea_fraction=0.3)
+    relief = suggested_relief(world.height, 0.3)
+    assert relief is not None and 10.0 < relief < 20000.0
+    assert suggested_relief(np.zeros((1024, 1024)), 0.3) is None
 
 
 def test_real_squares_are_nearest_to_themselves() -> None:

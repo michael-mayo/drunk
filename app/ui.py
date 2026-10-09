@@ -2,12 +2,13 @@
 
 Run ``python -m app.ui`` and open http://localhost:9000/. One map is built at
 a time, in a background thread; the page polls ``/api/state`` and redraws
-the map whenever a gang of drunks is accepted. Endpoints:
+the map whenever a gang of drunks or plains are accepted. Endpoints:
 
 - ``GET /``: the page.
 - ``POST /api/build`` with ``{"seed": int, "trials": int, "sea": percent or null}``: start building with that sea share
   (null: the builder chooses it); 409 while a build runs.
-- ``GET /api/state``: build progress, objective history, statistics, chosen sea share and city site, height quantiles.
+- ``GET /api/state``: build progress, objective history (null until something is kept), statistics, chosen sea
+  share, city site and suggested relief, height quantiles.
 - ``GET /api/preview.png?sea=&scale=&cx=&cy=``: the map, rolled so cell ``(cx, cy)`` is centred.
 - ``GET /api/heightmap/<world|playable>.png?sea=&scale=&sl=&cx=&cy=``: a CS2 heightmap download.
 """
@@ -35,6 +36,7 @@ from app.build_map import TRIALS
 from app.build_map import build_map
 from app.build_map import measure
 from app.build_map import nearest
+from app.build_map import suggested_relief
 from app.map import EDITOR_SEA_LEVEL_M
 from app.map import GRID
 from app.map import MAX_HEIGHT_M
@@ -63,9 +65,11 @@ class Build:
     # Per size ("world", "city"): the map's statistics, the mean of its nearest real squares', and their names.
     stats: dict[str, dict[str, list]] = field(default_factory=dict)
     quantiles: list[float] = field(default_factory=list)
-    # The builder's choices: share of the map under the sea, and the centre cell of the best city site.
+    # The builder's choices: share of the map under the sea, the centre cell of the best city site, and metres from
+    # lowest to highest point that match the relief of the map's nearest real squares (None if unknown).
     sea_fraction: float = SEA_FRACTION
     site: tuple[int, int] = (GRID // 2, GRID // 2)
+    relief: float | None = None
     error: str | None = None
 
 
@@ -97,19 +101,22 @@ def _run(seed: int, trials: int, sea_fraction: float | None) -> None:
     """Build thread: build the map, publishing progress into ``STATE``."""
     def progress(world: Map, trial: int, total: int, best: float, accepted: bool, text: str) -> None:
         snapshot = _snapshot(world) if accepted else None
+        relief = suggested_relief(world.height, world.sea_fraction) if accepted else None
         with LOCK:
             STATE.map, STATE.trial = world, trial
-            STATE.history.append(best)
+            # The objective is infinite until something is kept, and JSON has no infinity.
+            STATE.history.append(best if np.isfinite(best) else None)
             STATE.message = f"{'Kept' if accepted else 'Dropped'}: {text}"
             if snapshot:
                 STATE.accepted += 1
                 STATE.stats, STATE.quantiles = snapshot
                 STATE.sea_fraction, STATE.site = world.sea_fraction, world.site
+                STATE.relief = None if relief is None else min(max(relief, 100.0), MAX_HEIGHT_M)
 
     try:
         build_map(seed, trials, sea_fraction, progress)
         with LOCK:
-            STATE.message = f"Done: {STATE.accepted} gangs kept out of {trials}."
+            STATE.message = f"Done: kept {STATE.accepted} of {trials} trials."
     except Exception:
         traceback.print_exc()
         with LOCK:
@@ -161,19 +168,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send(state, "application/json")
         elif world is None or world.height.std() == 0:
             self._json({"error": "no map yet"}, HTTPStatus.NOT_FOUND)
-        elif url.path == "/api/preview.png":
-            self._send(world.preview_png(_view(query)), "image/png")
-        elif url.path in ("/api/heightmap/world.png", "/api/heightmap/playable.png"):
+        elif url.path not in ("/api/preview.png", "/api/heightmap/world.png", "/api/heightmap/playable.png"):
+            self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        else:
+            try:
+                view = _view(query)
+            except ValueError:
+                self._json({"error": "sea, scale, sl, cx and cy must be numbers"}, HTTPStatus.BAD_REQUEST)
+                return
+            if url.path == "/api/preview.png":
+                self._send(world.preview_png(view), "image/png")
+                return
             if running:
                 self._json({"error": "wait for the build to finish"}, HTTPStatus.CONFLICT)
                 return
             kind = url.path.rsplit("/", 1)[1].removesuffix(".png")
-            view = _view(query)
             name = f"drunk_seed{seed}_sea{view.sea_fraction * 100:.0f}_x{view.cx}_y{view.cy}_{kind}.png"
-            png = world.heightmap(view, kind, {"seed": seed, "gangs": len(world.gangs)})
+            png = world.heightmap(view, kind, {"seed": seed, "gangs": len(world.gangs), "plains": len(world.plains)})
             self._send(png, "image/png", headers={"Content-Disposition": f'attachment; filename="{name}"'})
-        else:
-            self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
         """Start a build."""
@@ -303,7 +315,7 @@ PAGE = """<!doctype html>
       <div class="muted">Cities: Skylines II maps from gangs of random walkers.</div>
       <div class="row"><label for="seed">Seed</label><input id="seed" type="number" step="1" value="41">
         <button class="ghost" id="dice" title="Random seed">🎲</button></div>
-      <div class="row"><label for="trials">Gangs to try</label><input id="trials" type="number" min="1" max="1000"></div>
+      <div class="row"><label for="trials">Trials</label><input id="trials" type="number" min="1" max="1000"></div>
       <div class="row"><label for="autoSea">Auto sea</label><input id="autoSea" type="checkbox">
         <span class="muted">let the builder choose the sea share</span></div>
       <div class="row"><button id="build" style="flex:1">Build map</button></div>
@@ -388,12 +400,14 @@ function redraw() {
 }
 
 function chart(history) {
-  if (!history.length) { $("chart").innerHTML = ""; return; }
-  const finite = history.filter(isFinite), top = Math.max(...finite, 1), n = Math.max(state.trials, 2);
-  const pts = history.map((v, i) => `${(i / (n - 1)) * 300},${70 - Math.min(v / top, 1) * 64 - 3}`).join(" ");
+  // Trials before anything was kept have no objective (null).
+  const kept = history.map((v, i) => [i, v]).filter(([, v]) => v !== null);
+  if (!kept.length) { $("chart").innerHTML = ""; $("best").textContent = "Objective: nothing kept yet."; return; }
+  const top = Math.max(...kept.map(([, v]) => v), 1), n = Math.max(state.trials, 2);
+  const pts = kept.map(([i, v]) => `${(i / (n - 1)) * 300},${70 - Math.min(v / top, 1) * 64 - 3}`).join(" ");
   $("chart").innerHTML = `<line x1="0" x2="300" y1="67" y2="67" stroke="var(--line)"/>` +
     `<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
-  $("best").textContent = `Objective ${history[history.length - 1].toFixed(3)} after ${history.length} of ${state.trials} gangs ` +
+  $("best").textContent = `Objective ${kept[kept.length - 1][1].toFixed(3)} after ${history.length} of ${state.trials} trials ` +
     `(${state.accepted} kept). 0 = matches its nearest real squares.`;
 }
 
@@ -422,12 +436,13 @@ async function poll() {
     $("build").disabled = state.running;
     $("world").disabled = $("playable").disabled = state.running || !state.accepted;
     // While building, the sea share is the build's (fixed, or the builder's choice with auto sea), and the view
-    // follows the city site; afterwards they are yours to change.
+    // follows the city site and the relief of the most similar real places; afterwards they are yours to change.
     $("sea").disabled = state.running;
     if (state.running && state.accepted !== adopted) {
       adopted = state.accepted;
       view.sea = Math.round(state.sea_fraction * 100); $("sea").value = view.sea;
       [view.cx, view.cy] = state.site;
+      if (state.relief) { view.scale = Math.round(state.relief / 10) * 10; $("scale").value = view.scale; }
     }
     chart(state.history); table(state.stats); heights(); redraw();
   } finally {

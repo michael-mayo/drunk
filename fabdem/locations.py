@@ -24,6 +24,8 @@ CITIES = {
     "Marseille": (43.296, 5.370),
     "Busan": (35.180, 129.075),
     "Kobe": (34.690, 135.196),
+    # Basins and river plains ringed by ranges.
+    "Hamilton": (-37.787, 175.279),
     # Flat coasts.
     "Copenhagen": (55.676, 12.568),
     "Buenos Aires": (-34.604, -58.382),

@@ -7,8 +7,8 @@ twice that resolution in a local east-north projection, then averaged in
 eight neighbours all have exactly the same height, as FABDEM flattens water).
 
 Writes ``data/windows/<site>.npz`` (height in decimetres, water),
-``data/reference.npz`` (every site's statistics, which ``app/build_map.py``
-loads as REFERENCE), ``data/reference.txt`` (the same, readable) and
+``data/reference.npz`` (every site's statistics and land relief, which
+``app/build_map.py`` loads as REFERENCE and RELIEF), ``data/reference.txt`` (the same, readable) and
 ``data/sites.png`` (a contact sheet of all sites); all are kept in git (via LFS). Run from the project root: ``python fabdem/reference.py``.
 Squares already in ``data/windows/`` are reused, so the raw tiles
 (``fabdem/download.py``) are only needed for new sites.
@@ -30,6 +30,7 @@ from download import KM_PER_DEGREE
 from download import TILES
 from download import corner
 from download import tiles_for
+from download import window_path
 from locations import CITIES
 from locations import WILD
 
@@ -91,6 +92,12 @@ def window(lat0: float, lon0: float) -> tuple[np.ndarray, np.ndarray]:
     return blocks(z), blocks(wet.astype(float)) > 0.5
 
 
+def relief(z: np.ndarray, water: np.ndarray) -> float:
+    """Land relief in metres: the 1st to 99th percentile of land heights."""
+    lo, hi = np.percentile(z[~water], [1, 99])
+    return float(hi - lo)
+
+
 def thumbnail(z: np.ndarray, water: np.ndarray, label: str, px: int = 256) -> Image.Image:
     """A small hill-shaded picture of a square, water in blue, with its name."""
     gy, gx = np.gradient(z, WORLD_KM * 1000 / z.shape[0])
@@ -108,8 +115,9 @@ def main() -> None:
     sites = [(name, p, "city") for name, p in CITIES.items()] + [(name, p, "wild") for name, p in WILD.items()]
     half = round(GRID * PLAYABLE_KM / WORLD_KM) // 2
     world_rows, city_rows, world_names, city_names, lines, thumbs = [], [], [], [], [], []
+    world_relief, city_relief = [], []
     for name, (lat, lon), kind in sites:
-        path = DATA / "windows" / f"{name.lower().replace(' ', '_')}.npz"
+        path = window_path(name)
         if path.exists():
             saved = np.load(path)
             z, water = saved["height_dm"] / 10.0, saved["water"]
@@ -121,13 +129,15 @@ def main() -> None:
         world = stats(z, ~water)
         world_rows.append(world)
         world_names.append(name)
-        row = f"{kind:4s}  {name:22s} world " + " ".join(f"{v:6.2f}" for v in world)
+        world_relief.append(relief(z, water))
+        row = f"{kind:4s}  {name:22s} {world_relief[-1]:5.0f} m  world " + " ".join(f"{v:6.2f}" for v in world)
         if kind == "city":
             c = slice(GRID // 2 - half, GRID // 2 + half)
             centre = stats(z[c, c], ~water[c, c])
             city_rows.append(centre)
             city_names.append(name)
-            row += "   centre " + " ".join(f"{v:6.2f}" for v in centre)
+            city_relief.append(relief(z[c, c], water[c, c]))
+            row += f"   {city_relief[-1]:5.0f} m  centre " + " ".join(f"{v:6.2f}" for v in centre)
         lines.append(row)
         thumbs.append(thumbnail(z, water, name))
         print(row, flush=True)
@@ -138,8 +148,10 @@ def main() -> None:
     sheet.save(DATA / "sites.png")
 
     np.savez(DATA / "reference.npz", world=np.array(world_rows), world_names=np.array(world_names),
-             city=np.array(city_rows), city_names=np.array(city_names))
-    lines += ["", f"{len(world_rows)} world squares, {len(city_rows)} city centres; columns: {', '.join(STAT_NAMES)}"]
+             world_relief=np.array(world_relief), city=np.array(city_rows), city_names=np.array(city_names),
+             city_relief=np.array(city_relief))
+    lines += ["", f"{len(world_rows)} world squares, {len(city_rows)} city centres; columns: land relief (1st to 99th "
+              f"percentile), then {', '.join(STAT_NAMES)}"]
     (DATA / "reference.txt").write_text("\n".join(lines) + "\n")
 
 

@@ -1,9 +1,10 @@
 """A Cities: Skylines II world map built from gangs of drunks: its height field, preview image and heightmap export.
 
 The map is a square ``WORLD_KM`` across that wraps around at its edges. Its
-height is the weighted sum of its gangs' fields on a ``grid`` x ``grid`` grid,
-row 0 at the top (north). Heights stay in arbitrary units until shown or
-exported: sea level is the height below which ``sea_fraction`` of the map lies,
+height is built up on a ``grid`` x ``grid`` grid, row 0 at the top (north),
+by adding gangs' weighted fields and laying down alluvial plains, in order.
+Heights stay in arbitrary units until shown or exported: sea level is the
+height below which ``sea_fraction`` of the map lies,
 and ``vertical_m`` metres span the lowest to the highest point. In the game,
 the coastline lands on the editor's sea level ``sea_level_m``.
 
@@ -21,6 +22,7 @@ from PIL import Image
 from PIL import PngImagePlugin
 
 from app.drunk import Gang
+from app.plains import Plains
 
 # Side of the CS2 world map and of its central playable area, in km.
 WORLD_KM = 57.344
@@ -59,13 +61,14 @@ class View:
 
 
 class Map:
-    """A world map: gangs of drunks with weights, and the height field they sum to."""
+    """A world map: the gangs of drunks (with weights) and plains it was built from, in order, and its height field."""
 
     def __init__(self, grid: int = GRID) -> None:
         """An empty (flat) map on a ``grid`` x ``grid`` grid."""
         self.grid = grid
         self.gangs: list[Gang] = []
         self.weights: list[float] = []
+        self.plains: list[Plains] = []
         self.height = np.zeros((grid, grid))
         # The sea share and city site (centre cell of the playable area) chosen by the builder.
         self.sea_fraction = SEA_FRACTION
@@ -78,6 +81,18 @@ class Map:
         self.gangs.append(gang)
         self.weights.append(weight)
         self.height = self.height + weight * field
+
+    def lay(self, plains: Plains, height: np.ndarray | None = None) -> None:
+        """Lay down ``plains`` at the map's sea share; ``height`` is the result, if already at hand."""
+        if height is None:
+            height = plains.apply(self.height, self.sea_fraction, WORLD_KM)
+        self.plains.append(plains)
+        self.height = height
+
+    @property
+    def steps(self) -> int:
+        """Number of gangs and plains the map was built from."""
+        return len(self.gangs) + len(self.plains)
 
     def metres(self, view: View) -> np.ndarray:
         """Heights in game metres, rolled so the playable area is centred on cell ``(view.cx, view.cy)``."""
